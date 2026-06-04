@@ -88,7 +88,7 @@ export function createRuntimeProfileConfig(
   return createDefaultProfileConfig({
     ...input,
     ...(input.agentKind === 'codex'
-      ? { codex: input.codex ?? { binaryPath: process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex' } }
+      ? { codex: input.codex ?? { binaryPath: process.env.AGENT_BRIDGE_CODEX_BIN ?? 'codex' } }
       : {}),
   });
 }
@@ -431,7 +431,7 @@ async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions): Pr
     if (!isInteractiveTerminal()) {
       throw new Error(
         '当前没有配置，非交互模式无法完成扫码创建应用。' +
-          '请先在终端运行 `lark-channel-bridge run` 完成首次初始化，' +
+          '请先在终端运行 `agent-bridge run` 完成首次初始化，' +
           '或传入 --app-id 和 --app-secret。',
       );
     }
@@ -692,7 +692,7 @@ async function maybeMigratePlaintextSecret(
       );
       await setSecret(secretKeyForApp(cfg.accounts.app.id), s, appPaths);
       await saveConfig(next, configPath);
-      console.log('🔒 已把 App Secret 加密迁移到 ~/.lark-channel/secrets.enc');
+      console.log('🔒 已把 App Secret 加密迁移到 ~/.agent-bridge/secrets.enc');
       return next;
     } catch (err) {
       log.warn('config', 'migrate-encrypted-failed', {

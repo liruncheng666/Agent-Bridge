@@ -236,11 +236,11 @@ describe('profile runtime resolver', () => {
     const claude = await writeExecutable(bin, 'claude');
     const codex = await writeExecutable(bin, 'codex');
     const oldPath = process.env.PATH;
-    const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
-    const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldClaude = process.env.AGENT_BRIDGE_CLAUDE_BIN;
+    const oldCodex = process.env.AGENT_BRIDGE_CODEX_BIN;
     process.env.PATH = bin;
-    delete process.env.LARK_CHANNEL_CLAUDE_BIN;
-    delete process.env.LARK_CHANNEL_CODEX_BIN;
+    delete process.env.AGENT_BRIDGE_CLAUDE_BIN;
+    delete process.env.AGENT_BRIDGE_CODEX_BIN;
 
     try {
       let error: Error | undefined;
@@ -266,14 +266,14 @@ describe('profile runtime resolver', () => {
     } finally {
       process.env.PATH = oldPath;
       if (oldClaude === undefined) {
-        delete process.env.LARK_CHANNEL_CLAUDE_BIN;
+        delete process.env.AGENT_BRIDGE_CLAUDE_BIN;
       } else {
-        process.env.LARK_CHANNEL_CLAUDE_BIN = oldClaude;
+        process.env.AGENT_BRIDGE_CLAUDE_BIN = oldClaude;
       }
       if (oldCodex === undefined) {
-        delete process.env.LARK_CHANNEL_CODEX_BIN;
+        delete process.env.AGENT_BRIDGE_CODEX_BIN;
       } else {
-        process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
+        process.env.AGENT_BRIDGE_CODEX_BIN = oldCodex;
       }
     }
   });
@@ -284,11 +284,11 @@ describe('profile runtime resolver', () => {
     const codex = await writeExecutable(bin, 'codex');
     await writeExecutable(bin, 'claude');
     const oldPath = process.env.PATH;
-    const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
-    const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldClaude = process.env.AGENT_BRIDGE_CLAUDE_BIN;
+    const oldCodex = process.env.AGENT_BRIDGE_CODEX_BIN;
     process.env.PATH = bin;
-    delete process.env.LARK_CHANNEL_CLAUDE_BIN;
-    delete process.env.LARK_CHANNEL_CODEX_BIN;
+    delete process.env.AGENT_BRIDGE_CLAUDE_BIN;
+    delete process.env.AGENT_BRIDGE_CODEX_BIN;
 
     try {
       const runtime = await withTty(true, true, () =>
@@ -308,14 +308,14 @@ describe('profile runtime resolver', () => {
     } finally {
       process.env.PATH = oldPath;
       if (oldClaude === undefined) {
-        delete process.env.LARK_CHANNEL_CLAUDE_BIN;
+        delete process.env.AGENT_BRIDGE_CLAUDE_BIN;
       } else {
-        process.env.LARK_CHANNEL_CLAUDE_BIN = oldClaude;
+        process.env.AGENT_BRIDGE_CLAUDE_BIN = oldClaude;
       }
       if (oldCodex === undefined) {
-        delete process.env.LARK_CHANNEL_CODEX_BIN;
+        delete process.env.AGENT_BRIDGE_CODEX_BIN;
       } else {
-        process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
+        process.env.AGENT_BRIDGE_CODEX_BIN = oldCodex;
       }
     }
   });

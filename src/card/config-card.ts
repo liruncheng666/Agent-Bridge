@@ -93,7 +93,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
           tag: 'markdown',
           content:
             '⚙️ **偏好设置**\n\n' +
-            '调整 bot 的行为偏好。改完点提交,**立即生效**(无需重启)并写入 `~/.lark-channel/config.json`。',
+            '调整 bot 的行为偏好。改完点提交,**立即生效**(无需重启)并写入 `~/.agent-bridge/config.json`。',
         },
         { tag: 'hr' },
         {

@@ -133,11 +133,11 @@ describe('first-run profile bootstrap', () => {
     const root = await makeRoot();
     const codex = await writeVersionExecutable(root, 'codex', 'codex 1.2.3');
     const oldPath = process.env.PATH;
-    const oldClaude = process.env.LARK_CHANNEL_CLAUDE_BIN;
-    const oldCodex = process.env.LARK_CHANNEL_CODEX_BIN;
+    const oldClaude = process.env.AGENT_BRIDGE_CLAUDE_BIN;
+    const oldCodex = process.env.AGENT_BRIDGE_CODEX_BIN;
     process.env.PATH = root;
-    process.env.LARK_CHANNEL_CLAUDE_BIN = 'missing-claude';
-    process.env.LARK_CHANNEL_CODEX_BIN = process.platform === 'win32' ? codex : 'codex';
+    process.env.AGENT_BRIDGE_CLAUDE_BIN = 'missing-claude';
+    process.env.AGENT_BRIDGE_CODEX_BIN = process.platform === 'win32' ? codex : 'codex';
     try {
       await expect(detectInstalledAgents()).resolves.toEqual([
         { kind: 'codex', binaryPath: codex },
@@ -145,14 +145,14 @@ describe('first-run profile bootstrap', () => {
     } finally {
       process.env.PATH = oldPath;
       if (oldClaude === undefined) {
-        delete process.env.LARK_CHANNEL_CLAUDE_BIN;
+        delete process.env.AGENT_BRIDGE_CLAUDE_BIN;
       } else {
-        process.env.LARK_CHANNEL_CLAUDE_BIN = oldClaude;
+        process.env.AGENT_BRIDGE_CLAUDE_BIN = oldClaude;
       }
       if (oldCodex === undefined) {
-        delete process.env.LARK_CHANNEL_CODEX_BIN;
+        delete process.env.AGENT_BRIDGE_CODEX_BIN;
       } else {
-        process.env.LARK_CHANNEL_CODEX_BIN = oldCodex;
+        process.env.AGENT_BRIDGE_CODEX_BIN = oldCodex;
       }
     }
   });

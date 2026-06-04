@@ -1,10 +1,8 @@
-# lark-channel-bridge
+# Agent-bridge
 
 A lightweight bot that bridges Feishu / Lark messenger with your local Claude Code or Codex CLI. Run one command, scan a QR code to bind a PersonalAgent app, and talk to your local coding agent from chat.
 
 [中文 README](./README.zh.md)
-
-For a product walkthrough, see the [Feishu document](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e).
 
 ## What it does
 
@@ -27,15 +25,15 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 ## Install
 
 ```bash
-npm i -g lark-channel-bridge
+npm i -g agent-bridge
 # or
-pnpm add -g lark-channel-bridge
+pnpm add -g agent-bridge
 ```
 
 ## First run
 
 ```bash
-lark-channel-bridge run
+agent-bridge run
 ```
 
 The first run opens a QR-code wizard:
@@ -44,16 +42,16 @@ The first run opens a QR-code wizard:
 2. Scan it with the Feishu / Lark app.
 3. Pick or create a PersonalAgent app.
 4. If prompted, choose which agent to initialize.
-5. Config is written to `~/.lark-channel/config.json`.
+5. Config is written to `~/.agent-bridge/config.json`.
 
 You do not need to choose a project directory up front. The bridge creates a profile-managed default working directory; after startup, send `/cd <path>` in Feishu / Lark to switch to a real project.
 
 If you already have a PersonalAgent app, pass `--app-id` during initialization to skip app creation. The command prompts for the App Secret.
 
 ```bash
-lark-channel-bridge run --app-id cli_xxx
+agent-bridge run --app-id cli_xxx
 # or initialize and start the background service directly
-lark-channel-bridge start --app-id cli_xxx
+agent-bridge start --app-id cli_xxx
 ```
 
 For Lark global apps, add `--tenant lark`.
@@ -63,9 +61,9 @@ For Lark global apps, add `--tenant lark`.
 Use `run` for first-run setup and foreground debugging. After the bot can send and receive messages, stop the foreground process with `Ctrl-C`, then use an OS-managed service for background operation:
 
 ```bash
-lark-channel-bridge start
-lark-channel-bridge status
-lark-channel-bridge stop
+agent-bridge start
+agent-bridge status
+agent-bridge stop
 ```
 
 Install globally before using service commands. The daemon's launchd plist / systemd unit / Windows task records the bridge CLI path; if that path comes from an npm temp cache through `npx`, the daemon can break when the cache is cleaned. `run` is fine through `npx` as a one-shot foreground process.
@@ -73,34 +71,34 @@ Install globally before using service commands. The daemon's launchd plist / sys
 Service commands install a per-profile service:
 
 ```bash
-lark-channel-bridge start [--profile <name>]
-lark-channel-bridge stop [--profile <name>]
-lark-channel-bridge restart [--profile <name>]
-lark-channel-bridge status [--profile <name>]
-lark-channel-bridge unregister [--profile <name>]
+agent-bridge start [--profile <name>]
+agent-bridge stop [--profile <name>]
+agent-bridge restart [--profile <name>]
+agent-bridge status [--profile <name>]
+agent-bridge unregister [--profile <name>]
 ```
 
 Platform mapping:
-- **macOS**: launchd user agent `ai.lark-channel-bridge.bot.<profile>`
-- **Linux**: systemd user unit `lark-channel-bridge.bot.<profile>.service`
-- **Windows**: Task Scheduler task `LarkChannelBridge.Bot.<profile>`, launched through a `.cmd` wrapper
+- **macOS**: launchd user agent `ai.agent-bridge.bot.<profile>`
+- **Linux**: systemd user unit `agent-bridge.bot.<profile>.service`
+- **Windows**: Task Scheduler task `AgentBridge.Bot.<profile>`, launched through a `.cmd` wrapper
 
-Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
+Daemon logs are under `~/.agent-bridge/profiles/<profile>/logs/daemon/`.
 
 ### Multiple profiles: Claude and Codex
 
 By default, the bridge starts with the currently selected profile. Use `profile use <name>` to change it. Each profile keeps its own app credentials, sessions, working directories, and logs. Create multiple profiles only when you need to connect multiple PersonalAgent apps, or run Claude and Codex as separate bots:
 
 ```bash
-lark-channel-bridge start --profile claude --agent claude
-lark-channel-bridge start --profile codex --agent codex
+agent-bridge start --profile claude --agent claude
+agent-bridge start --profile codex --agent codex
 ```
 
 For example, to restart only the Codex bot:
 
 ```bash
-lark-channel-bridge restart --profile codex
-lark-channel-bridge status --profile codex
+agent-bridge restart --profile codex
+agent-bridge status --profile codex
 ```
 
 ## Commands
@@ -108,24 +106,24 @@ lark-channel-bridge status --profile codex
 ### Host CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
-lark-channel-bridge ps
-lark-channel-bridge kill <id|#>
-lark-channel-bridge --help
+agent-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
+agent-bridge migrate [--profile <name>] [--agent claude|codex]
+agent-bridge ps
+agent-bridge kill <id|#>
+agent-bridge --help
 ```
 
 `profile use <name>` changes the profile used by later default starts. Use these profile management commands when running separate Claude / Codex bots, connecting multiple PersonalAgent apps, or doing scripted deployment:
 
 ```bash
-lark-channel-bridge profile create claude --agent claude
-lark-channel-bridge profile create codex --agent codex
-lark-channel-bridge profile list
-lark-channel-bridge profile use <name>
-lark-channel-bridge profile remove <name>
-lark-channel-bridge profile remove <name> --purge --yes
-lark-channel-bridge profile export <name> [--output ./profile.json] [--force]
-lark-channel-bridge profile export <name> --include-secrets --yes
+agent-bridge profile create claude --agent claude
+agent-bridge profile create codex --agent codex
+agent-bridge profile list
+agent-bridge profile use <name>
+agent-bridge profile remove <name>
+agent-bridge profile remove <name> --purge --yes
+agent-bridge profile export <name> [--output ./profile.json] [--force]
+agent-bridge profile export <name> --include-secrets --yes
 ```
 
 `profile remove` archives local state by default, including the active profile. If other profiles remain, the bridge switches to the next one; if it was the last profile, the root config is cleared so the same name can be created again. `--purge --yes` permanently deletes local state. `profile export` redacts app secrets by default; `--include-secrets --yes` includes sensitive config.
@@ -169,7 +167,7 @@ This is a profile-field snippet. Do not replace the whole `config.json` with it;
 ```json
 {
   "workspaces": {
-    "default": "/Users/me/.lark-channel-workspaces/claude/default"
+    "default": "/Users/me/.agent-bridge-workspaces/claude/default"
   }
 }
 ```
@@ -205,18 +203,18 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 
 | Path | Content |
 |---|---|
-| `~/.lark-channel/config.json` | Root config with profiles and active profile |
-| `~/.lark-channel/active-profile` | Last selected profile |
-| `~/.lark-channel/profiles/<profile>/sessions.json` | Session state |
-| `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
-| `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
-| `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
-| `~/.lark-channel/profiles/<profile>/media/` | Attachment cache |
-| `~/.lark-channel/profiles/<profile>/logs/` | Structured run logs |
-| `~/.lark-channel/registry/processes.json` | Local process registry |
-| `~/.lark-channel/registry/locks/` | Profile and app locks |
+| `~/.agent-bridge/config.json` | Root config with profiles and active profile |
+| `~/.agent-bridge/active-profile` | Last selected profile |
+| `~/.agent-bridge/profiles/<profile>/sessions.json` | Session state |
+| `~/.agent-bridge/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
+| `~/.agent-bridge/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
+| `~/.agent-bridge/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
+| `~/.agent-bridge/profiles/<profile>/media/` | Attachment cache |
+| `~/.agent-bridge/profiles/<profile>/logs/` | Structured run logs |
+| `~/.agent-bridge/registry/processes.json` | Local process registry |
+| `~/.agent-bridge/registry/locks/` | Profile and app locks |
 
-Set `LARK_CHANNEL_HOME=/path/to/state` to move all local bridge state. `LARK_CHANNEL_LOG_DAYS` overrides log retention.
+Set `LARK_CHANNEL_HOME=/path/to/state` to move all local bridge state. `AGENT_BRIDGE_LOG_DAYS` overrides log retention.
 
 ## Access control
 
@@ -254,7 +252,7 @@ To let other people or groups in, add them to one of three lists:
 
 ### Advanced: editing the config file directly
 
-If you'd rather not do it inside Feishu, `/invite` and `/config` write the matching profile's `access` field in `~/.lark-channel/config.json`. Empty lists mean nobody from that list, not open access. This is a profile-field snippet; do not replace the whole `config.json` with it:
+If you'd rather not do it inside Feishu, `/invite` and `/config` write the matching profile's `access` field in `~/.agent-bridge/config.json`. Empty lists mean nobody from that list, not open access. This is a profile-field snippet; do not replace the whole `config.json` with it:
 
 ```json
 {
@@ -276,7 +274,7 @@ If you'd rather not do it inside Feishu, `/invite` and `/config` write the match
 `allowedUsers` / `admins` take user `open_id`s; `allowedChats` takes group `chat_id`s. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check the active profile's log:
 
 ```bash
-grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y%m%d).jsonl | tail -5
+grep '"event":"enter"' ~/.agent-bridge/profiles/<profile>/logs/bridge-$(date +%Y%m%d).jsonl | tail -5
 ```
 
 Each line carries `chatId` (group / DM id) and `senderId` (user `open_id`). After a manual edit, **restart the bridge** or send `/reconnect` from an allowed admin context to apply it. For day-to-day tweaks `/invite` / `/config` are easier; direct edits are mainly for deployment scripts that pre-seed access.
@@ -316,13 +314,13 @@ By default the bridge reports **nothing**: no metrics, no logs leave your machin
 To wire up your own monitoring, point an environment variable at a module that default-exports (or exports `createAdapter`) an `AdapterFactory`:
 
 ```bash
-LARK_CHANNEL_TELEMETRY_MODULE=your-telemetry-package lark-channel-bridge start
+AGENT_BRIDGE_TELEMETRY_MODULE=your-telemetry-package agent-bridge start
 ```
 
 That module receives every `log.*` event plus error/metric hooks and forwards them wherever you like. The interface is exported from the package root:
 
 ```ts
-import type { AdapterFactory, TelemetryAdapter, TelemetryEvent } from 'lark-channel-bridge';
+import type { AdapterFactory, TelemetryAdapter, TelemetryEvent } from 'agent-bridge';
 
 const createAdapter: AdapterFactory = (meta) => ({
   emit(event) {/* ship event */},
@@ -339,4 +337,4 @@ A missing module, a bad factory, or a throwing adapter all degrade to noop — t
 
 [MIT](./LICENSE)
 
-<img src="./assets/feedback-group-qr.png" alt="Feedback group QR code" width="360">
+Agent-bridge is a derivative work based on [lark-channel-bridge](https://github.com/zarazhangrui/feishu-claude-code-bridge) (MIT). See [NOTICE](./NOTICE) for attribution.

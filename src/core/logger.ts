@@ -12,7 +12,7 @@ export interface LoggerOptions {
 
 const DEFAULT_RETENTION_DAYS = Math.max(
   1,
-  Number(process.env.LARK_CHANNEL_LOG_DAYS ?? 30) || 30,
+  Number(process.env.AGENT_BRIDGE_LOG_DAYS ?? 30) || 30,
 );
 
 let loggerOptions: LoggerOptions = {

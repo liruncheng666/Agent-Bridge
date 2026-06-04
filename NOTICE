@@ -1,0 +1,17 @@
+Agent-bridge
+============
+
+This product is a derivative work based on:
+
+  lark-channel-bridge
+  Copyright (c) 2026 Lark Channel Bridge contributors
+  Original author: zarazhangrui
+  Source: https://github.com/zarazhangrui/feishu-claude-code-bridge
+  License: MIT
+
+The original MIT License text is preserved in the LICENSE file, as required
+by its terms. Agent-bridge modifies, extends, and rebrands the original
+software for further development.
+
+Portions of this software remain (c) the original authors. All modifications
+beyond the upstream import are (c) the Agent-bridge maintainers.
