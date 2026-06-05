@@ -100,6 +100,137 @@ describe('IM run flow', () => {
     expect(h.agent.runOptions[0]?.cwd).toBe(workspaceRealpath);
   });
 
+  // SR-2: per-group workspace isolation.
+  it('auto-binds an isolated workspace for a group chat with no explicit cwd', async () => {
+    const h = await createHarness({ defaultWorkspace: true });
+    const base = join(h.tmp.root, 'groups');
+    const defaultRealpath = await realpath(h.tmp.workspace);
+
+    const result = await startRunFlow({
+      scopeId: 'oc_groupA',
+      scope: { source: 'im', chatId: 'oc_groupA', actorId: 'ou_user' },
+      prompt: 'hello',
+      attachments: [],
+      access: { ok: true, reason: 'allowed-chat' },
+      capability: claudeCapability(h.profileConfig),
+      profileConfig: h.profileConfig,
+      sessions: h.sessions,
+      workspaces: h.workspaces,
+      executor: h.executor,
+      now: 1000,
+      chatType: 'group',
+      isOwner: false,
+      autoGroupWorkspaceBase: base,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected run flow to start');
+    // Lands in its own dir, NOT the shared default workspace.
+    expect(result.cwdRealpath).not.toBe(defaultRealpath);
+    expect(result.cwdRealpath).toBe(await realpath(join(base, 'oc_groupA')));
+    // Binding is persisted so the next run resolves it directly.
+    expect(h.workspaces.cwdFor('oc_groupA')).toBe(result.cwdRealpath);
+  });
+
+  it('gives two different groups two different workspaces', async () => {
+    const h = await createHarness({ defaultWorkspace: true });
+    const base = join(h.tmp.root, 'groups');
+    const common = {
+      prompt: 'hello',
+      attachments: [],
+      access: { ok: true, reason: 'allowed-chat' } as const,
+      capability: claudeCapability(h.profileConfig),
+      profileConfig: h.profileConfig,
+      sessions: h.sessions,
+      workspaces: h.workspaces,
+      executor: h.executor,
+      now: 1000,
+      chatType: 'group' as const,
+      isOwner: false,
+      autoGroupWorkspaceBase: base,
+    };
+
+    const a = await startRunFlow({
+      ...common,
+      scopeId: 'oc_groupA',
+      scope: { source: 'im', chatId: 'oc_groupA', actorId: 'ou_user' },
+    });
+    // Drain the first run so it releases the (size-1) pool slot before the next.
+    if (a.ok) {
+      for await (const _ of a.execution.subscribe()) {
+        /* consume to completion */
+      }
+    }
+    const b = await startRunFlow({
+      ...common,
+      scopeId: 'oc_groupB',
+      scope: { source: 'im', chatId: 'oc_groupB', actorId: 'ou_user' },
+    });
+
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) throw new Error('expected both flows to start');
+    expect(a.cwdRealpath).not.toBe(b.cwdRealpath);
+  });
+
+  it('lets an explicit /cd binding win over auto group isolation', async () => {
+    const h = await createHarness({ defaultWorkspace: true });
+    const base = join(h.tmp.root, 'groups');
+    const explicit = await realpath(h.tmp.workspace);
+    h.workspaces.setCwd('oc_groupA', explicit);
+
+    const result = await startRunFlow({
+      scopeId: 'oc_groupA',
+      scope: { source: 'im', chatId: 'oc_groupA', actorId: 'ou_user' },
+      prompt: 'hello',
+      attachments: [],
+      access: { ok: true, reason: 'allowed-chat' },
+      capability: claudeCapability(h.profileConfig),
+      profileConfig: h.profileConfig,
+      sessions: h.sessions,
+      workspaces: h.workspaces,
+      executor: h.executor,
+      now: 1000,
+      chatType: 'group',
+      isOwner: false,
+      autoGroupWorkspaceBase: base,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected run flow to start');
+    expect(result.cwdRealpath).toBe(explicit);
+  });
+
+  it('sanitizes the topic scope separator into a single safe path segment', async () => {
+    const h = await createHarness({ defaultWorkspace: true });
+    const base = join(h.tmp.root, 'groups');
+
+    const result = await startRunFlow({
+      scopeId: 'oc_groupA:omThread9',
+      scope: {
+        source: 'im',
+        chatId: 'oc_groupA',
+        threadId: 'omThread9',
+        actorId: 'ou_user',
+      },
+      prompt: 'hello',
+      attachments: [],
+      access: { ok: true, reason: 'allowed-chat' },
+      capability: claudeCapability(h.profileConfig),
+      profileConfig: h.profileConfig,
+      sessions: h.sessions,
+      workspaces: h.workspaces,
+      executor: h.executor,
+      now: 1000,
+      chatType: 'group',
+      isOwner: false,
+      autoGroupWorkspaceBase: base,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected run flow to start');
+    expect(result.cwdRealpath).toBe(await realpath(join(base, 'oc_groupA_omThread9')));
+  });
+
 });
 
 async function createHarness(options: { defaultWorkspace?: boolean } = {}): Promise<{

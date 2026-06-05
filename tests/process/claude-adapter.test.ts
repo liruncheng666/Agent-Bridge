@@ -60,7 +60,8 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv[8]).not.toContain('lark-cli config bind --source lark-channel');
     expect(record.argv[8]).not.toContain('__claude_cb');
     expect(record.argv).not.toContain('--resume');
-    expect(record.argv).not.toContain('--model');
+    // Bridge applies a default model (Sonnet 4.6) when the run specifies none.
+    expect(record.argv.slice(-2)).toEqual(['--model', 'claude-sonnet-4-6']);
   });
 
   it('injects the active bridge profile env into spawned runs', async () => {

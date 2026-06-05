@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import { claudeCapability, codexCapability } from '../agent/capability';
-import type { AgentAdapter } from '../agent/types';
+import { CLAUDE_DEFAULT_MODEL, type AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
   accountCurrentCard,
@@ -26,7 +26,11 @@ import {
 } from '../config/schema';
 import type { ProfileAccess, ProfileConfig } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
-import { accessToClaudePermissionMode } from '../config/permissions';
+import {
+  accessToClaudePermissionMode,
+  scenarioMaxAccess,
+  type AccessMode,
+} from '../config/permissions';
 import {
   loadRootConfig,
   runtimeProfileConfig,
@@ -37,6 +41,7 @@ import {
   canRunAdminCommand,
   canUseDm,
   canUseGroup,
+  isCreator,
   type OwnerRefreshState,
 } from '../policy/access';
 import { setSecret } from '../config/keystore';
@@ -158,6 +163,8 @@ const handlers: Record<string, Handler> = {
   '/config': handleConfig,
   '/stop': handleStop,
   '/timeout': handleTimeout,
+  '/model': handleModel,
+  '/permission': handlePermission,
   '/ps': handlePs,
   '/exit': handleExit,
   '/doctor': handleDoctor,
@@ -183,6 +190,7 @@ const ADMIN_COMMANDS = new Set([
   '/ws',
   '/invite',
   '/remove',
+  '/permission',
 ]);
 
 function isAdminCommand(cmd: string): boolean {
@@ -887,6 +895,124 @@ function parseTimeoutTarget(input: string, currentScope: string): {
     value: input,
     targeted: false,
   };
+}
+
+// ────────────── /model — per-scope Claude model (SR-4) ──────────────
+
+const MODEL_ALIASES: Record<string, string> = {
+  opus: 'claude-opus-4-8',
+  sonnet: 'claude-sonnet-4-6',
+  haiku: 'claude-haiku-4-5-20251001',
+};
+
+async function handleModel(args: string, ctx: CommandContext): Promise<void> {
+  const input = args.trim();
+  const scope = ctx.scope;
+  const defaultLabel = `跟随默认 (${CLAUDE_DEFAULT_MODEL})`;
+  const usage =
+    '\n\n用法:\n- `/model` 查看当前 session 的模型\n- `/model sonnet` / `/model opus` / `/model haiku` 或完整模型 ID\n- `/model default` 清除覆盖,回到默认\n\n_注:模型是当前 session（群/私聊）级,`/new` 会保留这个设置_';
+
+  // /model — show current
+  if (!input) {
+    const current = ctx.sessions.getModel(scope);
+    await reply(
+      ctx,
+      current
+        ? `🧠 当前 session 模型: \`${current}\`${usage}`
+        : `🧠 当前 session 模型: ${defaultLabel}${usage}`,
+    );
+    return;
+  }
+
+  if (input.toLowerCase() === 'default') {
+    const cleared = ctx.sessions.clearModel(scope);
+    ctx.activeRuns.interrupt(scope);
+    log.info('command', 'model-clear', { scope, cleared });
+    await reply(
+      ctx,
+      cleared
+        ? `✅ 已清除模型覆盖,回到${defaultLabel}。(已结束当前运行,下条消息生效)`
+        : `当前 session 本来就没设过模型,${defaultLabel}。`,
+    );
+    return;
+  }
+
+  const resolved = MODEL_ALIASES[input.toLowerCase()] ?? input;
+  ctx.sessions.setModel(scope, resolved);
+  // End any in-flight run so the new model takes effect on the next message
+  // rather than mid-conversation.
+  ctx.activeRuns.interrupt(scope);
+  log.info('command', 'model-set', { scope, model: resolved });
+  await reply(ctx, `✅ 当前 session 模型已设为 \`${resolved}\`。(下条消息生效)`);
+}
+
+// ────────────── /permission — per-scope access override (SR-5) ──────────────
+
+async function handlePermission(args: string, ctx: CommandContext): Promise<void> {
+  const input = args.trim().toLowerCase();
+  const scope = ctx.scope;
+  const isP2p = ctx.chatMode === 'p2p';
+  const isOwner = isCreator(ctx.controls, ctx.msg.senderId);
+  // The SR-1 scenario ceiling that still applies on top of any override.
+  const ceiling = scenarioMaxAccess(isP2p ? 'p2p' : 'group', isOwner);
+  const ceilingNote =
+    ceiling === 'full'
+      ? ''
+      : `\n\n⚠️ 当前场景（${isP2p ? '私聊' : '群聊'}${isOwner ? '·owner' : '·非owner'}）的安全上限是 \`${ceiling}\`，更高的设置会被自动压到该上限。`;
+  const usage =
+    '\n\n用法:\n- `/permission` 查看当前设置\n- `/permission read-only` / `workspace` / `full`\n- `/permission default` 清除覆盖,回到 profile 默认\n\n_注:权限是当前 session 级,且始终受场景安全上限约束_';
+
+  if (!input) {
+    const current = ctx.sessions.getAccessOverride(scope);
+    await reply(
+      ctx,
+      current
+        ? `🔒 当前 session 权限覆盖: \`${current}\`${ceilingNote}${usage}`
+        : `🔒 当前 session 权限: 跟随 profile 默认 (\`${ctx.controls.profileConfig.permissions.defaultAccess}\`)${ceilingNote}${usage}`,
+    );
+    return;
+  }
+
+  if (input === 'default') {
+    const cleared = ctx.sessions.clearAccessOverride(scope);
+    ctx.activeRuns.interrupt(scope);
+    log.info('command', 'permission-clear', { scope, cleared });
+    await reply(
+      ctx,
+      cleared
+        ? '✅ 已清除权限覆盖,回到 profile 默认。(已结束当前运行,下条消息生效)'
+        : '当前 session 本来就没设过权限覆盖,跟随 profile 默认。',
+    );
+    return;
+  }
+
+  if (!isAccessModeInput(input)) {
+    await reply(ctx, '❌ 用法:`/permission read-only|workspace|full` 或 `/permission default`');
+    return;
+  }
+
+  ctx.sessions.setAccessOverride(scope, input);
+  ctx.activeRuns.interrupt(scope);
+  log.info('command', 'permission-set', { scope, access: input });
+  const effective = ACCESS_RANK[input] <= ACCESS_RANK[ceiling] ? input : ceiling;
+  const clampedNote =
+    effective !== input
+      ? `\n（注:受场景上限约束,实际生效为 \`${effective}\`）`
+      : '';
+  await reply(
+    ctx,
+    `✅ 当前 session 权限覆盖已设为 \`${input}\`。(下条消息生效)${clampedNote}`,
+  );
+}
+
+const ACCESS_RANK: Record<AccessMode, number> = {
+  'read-only': 0,
+  workspace: 1,
+  full: 2,
+};
+
+function isAccessModeInput(value: string): value is AccessMode {
+  return value === 'read-only' || value === 'workspace' || value === 'full';
 }
 
 async function handlePs(_args: string, ctx: CommandContext): Promise<void> {

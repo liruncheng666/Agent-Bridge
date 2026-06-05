@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import type { AccessMode } from '../config/permissions';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
@@ -14,6 +15,13 @@ export interface SessionEntry {
    * scope, undefined = follow global default. Session resets preserve this
    * scope preference while removing the resumable session id/cwd. */
   idleTimeoutMinutes?: number;
+  /** Per-scope Claude model override (SR-4). undefined = follow the bridge
+   * default model. Preserved across session resets like idleTimeoutMinutes. */
+  model?: string;
+  /** Per-scope access override (SR-5). undefined = follow profile permissions.
+   * Still subject to the SR-1 scenario ceiling at policy evaluation time, so
+   * this can never raise access above what the chat scenario allows. */
+  accessOverride?: AccessMode;
 }
 
 type SessionMap = Record<string, SessionEntry>;
@@ -43,13 +51,19 @@ export class SessionStore {
         const cwd = typeof entry.cwd === 'string' ? entry.cwd : undefined;
         const idleTimeoutMinutes =
           typeof entry.idleTimeoutMinutes === 'number' ? entry.idleTimeoutMinutes : undefined;
+        const model = typeof entry.model === 'string' ? entry.model : undefined;
+        const accessOverride = isAccessMode(entry.accessOverride) ? entry.accessOverride : undefined;
         const hasSession = sessionId !== undefined && cwd !== undefined;
-        if (!hasSession && idleTimeoutMinutes === undefined) continue;
+        const hasPreference =
+          idleTimeoutMinutes !== undefined || model !== undefined || accessOverride !== undefined;
+        if (!hasSession && !hasPreference) continue;
         this.data[chatId] = {
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
           updatedAt: entry.updatedAt,
           ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
+          ...(model !== undefined ? { model } : {}),
+          ...(accessOverride !== undefined ? { accessOverride } : {}),
         };
       }
     } catch (err) {
@@ -75,16 +89,15 @@ export class SessionStore {
   }
 
   set(chatId: string, sessionId: string, cwd: string): void {
-    // Preserve idleTimeoutMinutes across run starts — it's a per-scope
-    // preference, not per-run-instance state. /new (clear) wipes it.
+    // Preserve per-scope preferences (idle-timeout, model, access override)
+    // across run starts — they're scope preferences, not per-run-instance
+    // state. /new (clear) wipes the resume pair but keeps these.
     const prev = this.data[chatId];
     this.data[chatId] = {
       sessionId,
       cwd,
       updatedAt: Date.now(),
-      ...(prev?.idleTimeoutMinutes !== undefined
-        ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }
-        : {}),
+      ...preferenceFields(prev),
     };
     this.schedulePersist();
   }
@@ -92,9 +105,10 @@ export class SessionStore {
   clear(chatId: string): void {
     const prev = this.data[chatId];
     if (!prev) return;
-    if (prev.idleTimeoutMinutes !== undefined) {
+    const prefs = preferenceFields(prev);
+    if (Object.keys(prefs).length > 0) {
       this.data[chatId] = {
-        idleTimeoutMinutes: prev.idleTimeoutMinutes,
+        ...prefs,
         updatedAt: Date.now(),
       };
     } else {
@@ -130,6 +144,57 @@ export class SessionStore {
     return true;
   }
 
+  /** Per-scope Claude model override (SR-4). undefined = bridge default. */
+  getModel(chatId: string): string | undefined {
+    return this.data[chatId]?.model;
+  }
+
+  setModel(chatId: string, model: string): void {
+    const prev = this.data[chatId];
+    this.data[chatId] = {
+      ...(prev ?? { updatedAt: Date.now() }),
+      model,
+      updatedAt: Date.now(),
+    };
+    this.schedulePersist();
+  }
+
+  /** Remove the model override. Returns true if something was removed. */
+  clearModel(chatId: string): boolean {
+    const prev = this.data[chatId];
+    if (!prev || prev.model === undefined) return false;
+    const { model: _, ...rest } = prev;
+    this.data[chatId] = { ...rest, updatedAt: Date.now() };
+    this.schedulePersist();
+    return true;
+  }
+
+  /** Per-scope access override (SR-5). undefined = follow profile permissions.
+   * Still clamped by the SR-1 scenario ceiling at policy time. */
+  getAccessOverride(chatId: string): AccessMode | undefined {
+    return this.data[chatId]?.accessOverride;
+  }
+
+  setAccessOverride(chatId: string, access: AccessMode): void {
+    const prev = this.data[chatId];
+    this.data[chatId] = {
+      ...(prev ?? { updatedAt: Date.now() }),
+      accessOverride: access,
+      updatedAt: Date.now(),
+    };
+    this.schedulePersist();
+  }
+
+  /** Remove the access override. Returns true if something was removed. */
+  clearAccessOverride(chatId: string): boolean {
+    const prev = this.data[chatId];
+    if (!prev || prev.accessOverride === undefined) return false;
+    const { accessOverride: _, ...rest } = prev;
+    this.data[chatId] = { ...rest, updatedAt: Date.now() };
+    this.schedulePersist();
+    return true;
+  }
+
   async flush(): Promise<void> {
     await this.saving;
   }
@@ -145,4 +210,22 @@ export class SessionStore {
         log.fail('session', err, { step: 'persist' });
       });
   }
+}
+
+/** Per-scope preferences preserved across session set/clear (not per-run state). */
+function preferenceFields(
+  entry: SessionEntry | undefined,
+): Partial<Pick<SessionEntry, 'idleTimeoutMinutes' | 'model' | 'accessOverride'>> {
+  if (!entry) return {};
+  return {
+    ...(entry.idleTimeoutMinutes !== undefined
+      ? { idleTimeoutMinutes: entry.idleTimeoutMinutes }
+      : {}),
+    ...(entry.model !== undefined ? { model: entry.model } : {}),
+    ...(entry.accessOverride !== undefined ? { accessOverride: entry.accessOverride } : {}),
+  };
+}
+
+function isAccessMode(value: unknown): value is AccessMode {
+  return value === 'read-only' || value === 'workspace' || value === 'full';
 }

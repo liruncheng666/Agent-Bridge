@@ -6,6 +6,7 @@ import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import {
+  CLAUDE_DEFAULT_MODEL,
   CLAUDE_DEFAULT_PERMISSION_MODE,
   type AgentAdapter,
   type AgentBotIdentity,
@@ -18,6 +19,12 @@ import { translateEvent } from './stream-json';
 export interface ClaudeAdapterOptions {
   binary?: string;
   larkChannel?: LarkChannelEnvContext;
+  /**
+   * Model used when a run does not specify one. Bridge-only default; falls
+   * back to CLAUDE_DEFAULT_MODEL (Sonnet 4.6) when not provided. Does not
+   * affect direct `claude` usage outside the bridge.
+   */
+  defaultModel?: string;
 }
 
 type ClaudeChild = SpawnedProcessByStdio<null, Readable, Readable>;
@@ -28,11 +35,13 @@ export class ClaudeAdapter implements AgentAdapter {
 
   private readonly binary: string;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
+  private readonly defaultModel: string;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
     this.larkChannel = opts.larkChannel;
+    this.defaultModel = opts.defaultModel ?? CLAUDE_DEFAULT_MODEL;
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -69,7 +78,8 @@ export class ClaudeAdapter implements AgentAdapter {
       buildBridgeSystemPrompt(this.botIdentity),
     ];
     if (opts.sessionId) args.push('--resume', opts.sessionId);
-    if (opts.model) args.push('--model', opts.model);
+    const model = opts.model ?? this.defaultModel;
+    if (model) args.push('--model', model);
 
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
@@ -82,7 +92,7 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd: opts.cwd ?? process.cwd(),
       hasSession: Boolean(opts.sessionId),
       promptChars: opts.prompt.length,
-      model: opts.model,
+      model,
     });
 
     // Listeners MUST be attached synchronously here, before we return.

@@ -307,6 +307,8 @@ pnpm build
 
 `pnpm test` includes unit, integration, and process-level adapter tests. CI runs on macOS, Ubuntu, and Windows with `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm typecheck`, and `pnpm build`.
 
+> Modifying the code, opening a PR, releasing, or syncing updates across the team? See [CONTRIBUTING.md](./CONTRIBUTING.md) for the development and collaboration workflow.
+
 ## Optional telemetry
 
 By default the bridge reports **nothing**: no metrics, no logs leave your machine, and it pulls in zero telemetry dependencies. The hook below is inert unless you opt in.

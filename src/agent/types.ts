@@ -27,6 +27,14 @@ export type AgentEvent =
 
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
+/**
+ * Default Claude model the bridge spawns its `claude` subprocess with when no
+ * per-run / per-scope model is set. This is bridge-only: it does NOT change
+ * the model used when you run `claude` directly outside the bridge. A future
+ * `/model` command (SR-4) can override this per scope.
+ */
+export const CLAUDE_DEFAULT_MODEL = 'claude-sonnet-4-6';
+
 export interface AgentRunOptions {
   runId: string;
   prompt: string;

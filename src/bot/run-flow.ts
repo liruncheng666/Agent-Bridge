@@ -1,5 +1,8 @@
+import { mkdir, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { AgentCapability } from '../agent/capability';
 import type { AgentEvent } from '../agent/types';
+import type { AccessMode } from '../config/permissions';
 import type { ProfileConfig } from '../config/profile-schema';
 import type { AccessDecision } from '../policy/access';
 import {
@@ -34,6 +37,21 @@ export interface StartRunFlowInput {
   executor: RunExecutor;
   now: number;
   stopGraceMs?: number;
+  /** IM chat type for SR-1 scenario permission tiering. Omit for p2p default. */
+  chatType?: 'p2p' | 'group';
+  /** Whether the sender is the bot owner (SR-1). Defaults to false. */
+  isOwner?: boolean;
+  /**
+   * Base directory for SR-2 per-group workspace isolation. When set and the
+   * chat is a group with no explicit `/cd` binding, the run auto-binds an
+   * isolated cwd under this base instead of falling back to the shared
+   * profile default workspace.
+   */
+  autoGroupWorkspaceBase?: string;
+  /** Per-scope Claude model override (SR-4 `/model`). */
+  model?: string;
+  /** Per-scope access override (SR-5 `/permission`), still clamped by SR-1. */
+  accessOverride?: AccessMode;
   observability?: {
     profile: string;
     agent: string;
@@ -74,8 +92,7 @@ export interface RecordRunSessionEventInput {
 }
 
 export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFlowResult> {
-  const requestedCwd =
-    input.workspaces.cwdFor(input.scopeId) ?? input.profileConfig.workspaces.default ?? '';
+  const requestedCwd = await resolveRequestedCwd(input);
   const workspace = await resolveWorkingDirectory(requestedCwd);
   if (!workspace.ok) {
     return {
@@ -100,6 +117,9 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     now: input.now,
     codexHome: input.profileConfig.codex?.codexHome,
     inheritCodexHome: input.profileConfig.codex?.inheritCodexHome,
+    ...(input.chatType ? { chatType: input.chatType } : {}),
+    ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
+    ...(input.accessOverride ? { accessOverride: input.accessOverride } : {}),
   });
   if (!policy.ok) {
     return {
@@ -143,6 +163,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       policy,
       sessionId,
       threadId,
+      ...(input.model ? { model: input.model } : {}),
       images:
         input.capability.agentId === 'codex'
           ? policy.attachments
@@ -179,6 +200,41 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     cwdRealpath: workspace.cwdRealpath,
     ...(resumeFrom ? { resumeFrom } : {}),
   };
+}
+
+/**
+ * Resolve the working directory for a run (SR-2 per-group isolation).
+ *
+ * Precedence:
+ *   1. explicit per-scope binding (`/cd`, `/ws`) — always wins.
+ *   2. group chat with `autoGroupWorkspaceBase` set → auto-bind an isolated
+ *      directory `<base>/<sanitized-scopeId>/` and persist it, so each group
+ *      gets its own sandbox and cannot read another group's files.
+ *   3. fall back to the shared profile default workspace (p2p, or groups when
+ *      no base is provided).
+ */
+async function resolveRequestedCwd(input: StartRunFlowInput): Promise<string> {
+  const explicit = input.workspaces.cwdFor(input.scopeId);
+  if (explicit) return explicit;
+
+  if (input.chatType === 'group' && input.autoGroupWorkspaceBase) {
+    const dir = join(input.autoGroupWorkspaceBase, sanitizeScopeDir(input.scopeId));
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const real = await realpath(dir);
+    input.workspaces.setCwd(input.scopeId, real);
+    return real;
+  }
+
+  return input.profileConfig.workspaces.default ?? '';
+}
+
+/**
+ * Turn a scope id (chatId, or `chatId:threadId` for topic groups) into a safe
+ * single path segment. Non `[A-Za-z0-9._-]` chars (including the `:` topic
+ * separator) become `_`.
+ */
+function sanitizeScopeDir(scopeId: string): string {
+  return scopeId.replace(/[^A-Za-z0-9._-]/g, '_');
 }
 
 export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {

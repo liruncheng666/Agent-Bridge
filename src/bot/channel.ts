@@ -43,7 +43,7 @@ import {
   toPolicyAttachment,
   toPromptAttachment,
 } from '../media/attachment';
-import { canUseDm, canUseGroup } from '../policy/access';
+import { canUseDm, canUseGroup, isCreator } from '../policy/access';
 import type { ScopeContext } from '../policy/run-policy';
 import { createOwnerRefreshController, type OwnerRawClient } from '../policy/owner';
 import { RunExecutor } from '../runtime/run-executor';
@@ -165,7 +165,10 @@ export interface StartChannelDeps {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   controls: Controls;
-  appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  appPaths?: Pick<
+    AppPaths,
+    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'defaultWorkspaceDir'
+  >;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -188,6 +191,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // the encrypted keystore / env / file / exec provider. Re-resolved on
   // every startChannel so /account change picks up new secrets.
   const appSecret = await resolveAppSecret(cfg, deps.appPaths);
+  // SR-2: base dir for per-group workspace isolation. Sibling of the profile's
+  // `default` workspace, e.g. `<rootDir>-workspaces/<profile>/groups`. When
+  // unset (no appPaths), group runs fall back to the shared default workspace.
+  const autoGroupWorkspaceBase = deps.appPaths?.defaultWorkspaceDir
+    ? join(dirname(deps.appPaths.defaultWorkspaceDir), 'groups')
+    : undefined;
   const callbackNonceStore = deps.appPaths?.mediaDir
     ? new CallbackNonceStore(join(dirname(deps.appPaths.mediaDir), 'callback-nonces.json'))
     : undefined;
@@ -265,6 +274,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           activePolicyFingerprints,
           scope,
           mode,
+          ...(autoGroupWorkspaceBase ? { autoGroupWorkspaceBase } : {}),
         });
       } catch (err) {
         log.fail('flush', err);
@@ -609,6 +619,8 @@ interface RunBatchDeps {
   activePolicyFingerprints: Map<string, string>;
   scope: string;
   mode: ChatMode;
+  /** SR-2: base dir for per-group workspace isolation; undefined disables it. */
+  autoGroupWorkspaceBase?: string;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -625,6 +637,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     activePolicyFingerprints,
     scope,
     mode,
+    autoGroupWorkspaceBase,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -687,8 +700,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
   };
 
+  const chatType: 'p2p' | 'group' = firstMsg.chatType === 'p2p' ? 'p2p' : 'group';
+  const isOwner = isCreator(controls, firstMsg.senderId);
   const accessDecision =
-    firstMsg.chatType === 'p2p'
+    chatType === 'p2p'
       ? canUseDm(controls.profileConfig, controls, firstMsg.senderId)
       : canUseGroup(controls.profileConfig, controls, firstMsg.chatId, firstMsg.senderId);
   const scopeContext: ScopeContext = {
@@ -701,6 +716,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     controls.profileConfig.agentKind === 'codex'
       ? codexCapability(controls.profileConfig)
       : claudeCapability(controls.profileConfig);
+  // Per-scope overrides (SR-4 /model, SR-5 /permission). Undefined = follow
+  // bridge/profile defaults. accessOverride is still clamped by SR-1 scenario.
+  const scopeModel = sessions.getModel(scope);
+  const scopeAccessOverride = sessions.getAccessOverride(scope);
   const flow = await startRunFlow({
     scopeId: scope,
     scope: scopeContext,
@@ -715,6 +734,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     executor,
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
+    chatType,
+    isOwner,
+    ...(autoGroupWorkspaceBase ? { autoGroupWorkspaceBase } : {}),
+    ...(scopeModel ? { model: scopeModel } : {}),
+    ...(scopeAccessOverride ? { accessOverride: scopeAccessOverride } : {}),
     observability: {
       profile: controls.profile,
       agent: capability.agentId,

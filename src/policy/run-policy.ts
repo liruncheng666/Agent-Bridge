@@ -2,7 +2,9 @@ import type { AgentCapability } from '../agent/capability';
 import {
   accessToClaudePermissionMode,
   accessToCodexSandbox,
+  applyAccessCeiling,
   clampAccess,
+  scenarioMaxAccess,
   type AccessMode,
   type ClaudePermissionMode,
   type CodexSandboxMode,
@@ -55,6 +57,21 @@ export interface RunPolicyInput {
   codexHome?: string;
   inheritCodexHome?: boolean;
   ttlMs?: number;
+  /**
+   * IM chat type for scenario-based permission tiering (SR-1). Defaults to
+   * 'p2p' when omitted (no scenario ceiling), preserving behavior for the
+   * comment / catalog-identity call sites that don't set it.
+   */
+  chatType?: 'p2p' | 'group';
+  /** Whether the message sender is the bot owner (creator). Defaults to false. */
+  isOwner?: boolean;
+  /**
+   * Per-scope access override set via `/permission` (SR-5). When provided it
+   * replaces the profile default access as the *requested* level, but is
+   * still clamped by both the profile/capability max AND the SR-1 scenario
+   * ceiling — so it can never raise access above what the scenario allows.
+   */
+  accessOverride?: AccessMode;
 }
 
 export interface RunPolicyAllow {
@@ -104,10 +121,20 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     return reject('required-attachment-rejected', '必需附件未通过校验，已拒绝运行。');
   }
 
-  const accessMode = clampAccess(
-    input.profileConfig.permissions.defaultAccess,
+  // The requested access starts from the profile default, or a per-scope
+  // `/permission` override (SR-5) when set. clampAccess then bounds it by the
+  // profile max and the agent capability max.
+  const requestedAccess = input.accessOverride ?? input.profileConfig.permissions.defaultAccess;
+  const baseAccess = clampAccess(
+    requestedAccess,
     input.profileConfig.permissions.maxAccess,
     input.capability.permissions.maxAccess,
+  );
+  // SR-1: apply the per-scenario ceiling (group chats are tiered down) on top
+  // of the profile/capability clamp. Only ever lowers access, never raises it.
+  const accessMode = applyAccessCeiling(
+    baseAccess,
+    scenarioMaxAccess(input.chatType ?? 'p2p', input.isOwner ?? false),
   );
   const sandbox = accessToCodexSandbox(accessMode);
   const permissionMode = accessToClaudePermissionMode(

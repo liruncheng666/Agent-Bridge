@@ -156,6 +156,134 @@ describe('run policy', () => {
     expect(source).not.toMatch(/rawClient|LarkChannel|createLarkChannel/);
     expect(source).not.toMatch(/writeFile|mkdir|rm\(/);
   });
+
+  // SR-1: group-level permission tiering. The profile default here is `full`.
+  describe('scenario permission tiering (SR-1)', () => {
+    it('leaves p2p unrestricted (owner keeps full in private chat)', () => {
+      const result = evaluateRunPolicy(baseInput({ chatType: 'p2p', isOwner: true }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('full');
+      expect(result.permissionMode).toBe('bypassPermissions');
+    });
+
+    it('omitting chatType/isOwner defaults to p2p (no scenario ceiling)', () => {
+      const result = evaluateRunPolicy(baseInput());
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('full');
+    });
+
+    it('caps the owner to workspace in group chats', () => {
+      const result = evaluateRunPolicy(baseInput({ chatType: 'group', isOwner: true }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('workspace');
+      expect(result.sandbox).toBe('workspace-write');
+      expect(result.permissionMode).toBe('acceptEdits');
+    });
+
+    it('caps non-owners to read-only in group chats', () => {
+      const result = evaluateRunPolicy(baseInput({ chatType: 'group', isOwner: false }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('read-only');
+      expect(result.sandbox).toBe('read-only');
+      expect(result.permissionMode).toBe('plan');
+    });
+
+    it('is a ceiling, never a grant: a read-only profile stays read-only even for the owner in p2p', () => {
+      const result = evaluateRunPolicy(
+        baseInput({
+          chatType: 'p2p',
+          isOwner: true,
+          profileConfig: profile({
+            permissions: { defaultAccess: 'read-only', maxAccess: 'read-only' },
+          }),
+        }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('read-only');
+    });
+
+    it('group owner cap does not raise a profile already below workspace', () => {
+      const result = evaluateRunPolicy(
+        baseInput({
+          chatType: 'group',
+          isOwner: true,
+          profileConfig: profile({
+            permissions: { defaultAccess: 'read-only', maxAccess: 'read-only' },
+          }),
+        }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('read-only');
+    });
+  });
+
+  // SR-5: per-scope /permission override, still bounded by SR-1 ceiling + profile max.
+  describe('per-scope access override (SR-5)', () => {
+    it('applies an override below the profile default', () => {
+      // Default profile is full; override pins this scope to read-only.
+      const result = evaluateRunPolicy(baseInput({ accessOverride: 'read-only' }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('read-only');
+      expect(result.permissionMode).toBe('plan');
+    });
+
+    it('lets the owner raise a workspace-default profile to full in p2p', () => {
+      const result = evaluateRunPolicy(
+        baseInput({
+          chatType: 'p2p',
+          isOwner: true,
+          accessOverride: 'full',
+          profileConfig: profile({
+            permissions: { defaultAccess: 'workspace', maxAccess: 'full' },
+          }),
+        }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('full');
+    });
+
+    it('cannot exceed the profile maxAccess', () => {
+      const result = evaluateRunPolicy(
+        baseInput({
+          chatType: 'p2p',
+          isOwner: true,
+          accessOverride: 'full',
+          profileConfig: profile({
+            permissions: { defaultAccess: 'read-only', maxAccess: 'workspace' },
+          }),
+        }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('workspace');
+    });
+
+    it('is still clamped by the SR-1 group ceiling: /permission full in a non-owner group stays read-only', () => {
+      const result = evaluateRunPolicy(
+        baseInput({ chatType: 'group', isOwner: false, accessOverride: 'full' }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('read-only');
+    });
+
+    it('is still clamped by the SR-1 group ceiling: owner /permission full stays workspace', () => {
+      const result = evaluateRunPolicy(
+        baseInput({ chatType: 'group', isOwner: true, accessOverride: 'full' }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('expected allow');
+      expect(result.accessMode).toBe('workspace');
+    });
+  });
 });
 
 function baseInput(overrides: Partial<RunPolicyInput> = {}): RunPolicyInput {

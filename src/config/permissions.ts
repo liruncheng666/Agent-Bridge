@@ -80,6 +80,30 @@ export function clampAccess(
   return ACCESS_ORDER[defaultAccess] <= ACCESS_ORDER[maxAllowed] ? defaultAccess : maxAllowed;
 }
 
+/**
+ * Per-scenario access ceiling (SR-1, group-level permission tiering).
+ *
+ * The owner's own private chat (p2p) is unrestricted — they have authorized
+ * the bot on their own machine. Group chats are tiered down to limit blast
+ * radius once other people can drive the agent:
+ *   - group + owner     → at most `workspace` (edits need confirmation, no
+ *                          unconfirmed arbitrary commands / full-disk access)
+ *   - group + non-owner → at most `read-only`
+ *
+ * This is a CEILING applied on top of the existing profile/capability clamp,
+ * never a grant: it only ever lowers the resolved access, so it cannot widen
+ * a profile that is already restricted.
+ */
+export function scenarioMaxAccess(chatType: 'p2p' | 'group', isOwner: boolean): AccessMode {
+  if (chatType === 'p2p') return 'full';
+  return isOwner ? 'workspace' : 'read-only';
+}
+
+/** Lower `access` to `ceiling` when it exceeds it; never raises it. */
+export function applyAccessCeiling(access: AccessMode, ceiling: AccessMode): AccessMode {
+  return ACCESS_ORDER[access] <= ACCESS_ORDER[ceiling] ? access : ceiling;
+}
+
 export function codexSandboxToAccess(mode: CodexSandboxMode): AccessMode {
   switch (mode) {
     case 'read-only':
