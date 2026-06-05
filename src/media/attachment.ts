@@ -106,9 +106,13 @@ export function toPolicyAttachment(attachment: NormalizedAttachment): PolicyAtta
   };
 }
 
-export function toPromptAttachment(attachment: NormalizedAttachment): BridgePromptAttachment {
+export function toPromptAttachment(
+  attachment: NormalizedAttachment,
+  archiveMap?: ReadonlyMap<string, string>,
+): BridgePromptAttachment {
+  const path = archiveMap?.get(attachment.absPath) ?? attachment.absPath;
   return {
-    path: attachment.absPath,
+    path,
     kind: attachment.kind,
     hash: attachment.hash,
     size: attachment.size,

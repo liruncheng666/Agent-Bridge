@@ -762,7 +762,36 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
-  const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity);
+  // Archive accepted attachments BEFORE buildPrompt so the prompt paths point
+  // to the workspace inbox copies rather than the ephemeral media-cache paths.
+  // We estimate the cwd using the same precedence as startRunFlow/resolveRequestedCwd:
+  //   1. explicit per-scope binding already in workspaces
+  //   2. auto group workspace path (may not exist yet — that's fine, archiveAttachments
+  //      creates it via mkdir; if it somehow fails we fall back to media paths)
+  //   3. profile default workspace
+  const attachmentConfig = controls.profileConfig.attachments;
+  let archiveMap: Map<string, string> = new Map();
+  if (attachmentConfig.archiveToWorkspace && attachments.some((a) => a.decision === 'accepted')) {
+    const estimatedCwd =
+      workspaces.cwdFor(scope) ??
+      (firstMsg.chatType !== 'p2p' && autoGroupWorkspaceBase
+        ? join(autoGroupWorkspaceBase, scope.replace(/[^A-Za-z0-9._-]/g, '_'))
+        : controls.profileConfig.workspaces.default ?? '');
+    if (estimatedCwd) {
+      try {
+        const results = await archiveAttachments(attachments, estimatedCwd, {
+          subdir: attachmentConfig.archiveSubdir,
+        });
+        archiveMap = new Map(
+          [...results.entries()].map(([absPath, r]) => [absPath, r.archivePath]),
+        );
+      } catch (err) {
+        log.fail('archive', err, { cwd: estimatedCwd });
+      }
+    }
+  }
+
+  const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity, archiveMap);
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
   // For topic groups: thread the reply so it lands in the same topic as the
@@ -832,16 +861,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   const { execution, cwdRealpath: cwd } = flow;
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
-
-  // Archive accepted attachments into <workspace>/inbox/ (FR-1~FR-3 REQ-01).
-  // Runs after cwd is known, before the agent starts consuming events.
-  // Never throws — failures degrade silently so the run is never blocked.
-  const attachmentConfig = controls.profileConfig.attachments;
-  if (attachmentConfig.archiveToWorkspace) {
-    archiveAttachments(attachments, cwd, {
-      subdir: attachmentConfig.archiveSubdir,
-    }).catch((err) => log.fail('archive', err, { cwd }));
-  }
 
   const handle = execution.handle;
   const eventStream = execution.subscribe();
@@ -1113,6 +1132,7 @@ function buildPrompt(
   attachments: LocalAttachment[],
   quotes: QuotedContext[] = [],
   botIdentity?: { openId: string; name?: string },
+  archiveMap?: ReadonlyMap<string, string>,
 ): string {
   const first = batch[0];
   if (!first) return '';
@@ -1156,7 +1176,7 @@ function buildPrompt(
     userInput: userPart,
     quotedMessages: quotes.map(toPromptQuote),
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
-    attachments: attachments.map(toPromptAttachment),
+    attachments: attachments.map((a) => toPromptAttachment(a, archiveMap)),
   });
 }
 
