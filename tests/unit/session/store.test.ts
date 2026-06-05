@@ -5,15 +5,22 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SessionStore } from '../../../src/session/store';
 
 const dirs: string[] = [];
+const stores: SessionStore[] = [];
 
 afterEach(async () => {
+  // Flush pending async writes before deleting temp dirs — on Windows an
+  // in-flight write keeps a handle open and rmdir fails with ENOTEMPTY.
+  await Promise.all(stores.splice(0).map((s) => s.flush()));
   await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
 });
 
 async function freshStore(): Promise<{ store: SessionStore; path: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'bridge-session-store-'));
   dirs.push(dir);
-  return { store: new SessionStore(join(dir, 'sessions.json')), path: join(dir, 'sessions.json') };
+  const path = join(dir, 'sessions.json');
+  const store = new SessionStore(path);
+  stores.push(store);
+  return { store, path };
 }
 
 describe('SessionStore per-scope preferences (SR-4 model / SR-5 access)', () => {
