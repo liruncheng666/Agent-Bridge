@@ -51,6 +51,10 @@ export interface AttachmentConfig {
   imageMaxBytes: number;
   cacheTtlMs: number;
   cacheMaxBytes: number;
+  /** Copy accepted attachments into <workspace>/<archiveSubdir>/ after a run starts. Default true. */
+  archiveToWorkspace: boolean;
+  /** Subdirectory name under workspace for archived attachments. Default 'inbox'. */
+  archiveSubdir: string;
 }
 
 export type CommentConfig = Record<string, never>;
@@ -177,6 +181,10 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
       imageMaxBytes: numberOr(raw.attachments?.imageMaxBytes, 25 * 1024 * 1024),
       cacheTtlMs: numberOr(raw.attachments?.cacheTtlMs, 24 * 60 * 60 * 1000),
       cacheMaxBytes: numberOr(raw.attachments?.cacheMaxBytes, 512 * 1024 * 1024),
+      archiveToWorkspace: raw.attachments?.archiveToWorkspace !== false,
+      archiveSubdir: typeof raw.attachments?.archiveSubdir === 'string' && raw.attachments.archiveSubdir.trim()
+        ? raw.attachments.archiveSubdir.trim()
+        : 'inbox',
     },
     comments,
   };

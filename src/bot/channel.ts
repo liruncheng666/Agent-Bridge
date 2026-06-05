@@ -39,6 +39,7 @@ import {
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
 import { MediaCache, type LocalAttachment } from '../media/cache';
+import { archiveAttachments } from '../media/archive';
 import {
   toPolicyAttachment,
   toPromptAttachment,
@@ -759,6 +760,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   const { execution, cwdRealpath: cwd } = flow;
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
+
+  // Archive accepted attachments into <workspace>/inbox/ (FR-1~FR-3 REQ-01).
+  // Runs after cwd is known, before the agent starts consuming events.
+  // Never throws — failures degrade silently so the run is never blocked.
+  const attachmentConfig = controls.profileConfig.attachments;
+  if (attachmentConfig.archiveToWorkspace) {
+    archiveAttachments(attachments, cwd, {
+      subdir: attachmentConfig.archiveSubdir,
+    }).catch((err) => log.fail('archive', err, { cwd }));
+  }
+
   const handle = execution.handle;
   const eventStream = execution.subscribe();
   if (flow.resumeFrom) {
