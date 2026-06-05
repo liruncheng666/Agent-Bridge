@@ -2,6 +2,7 @@ import type {
   ApiMessageItem,
   LarkChannel,
   RawMessageEvent,
+  ResourceDescriptor,
 } from '@larksuiteoapi/node-sdk';
 import { normalize } from '@larksuiteoapi/node-sdk';
 import { log } from '../core/logger';
@@ -19,6 +20,12 @@ export interface QuotedContext {
    * </forwarded_messages>` (capped at 50 items by the SDK). */
   content: string;
   rawContentType: string;
+  /**
+   * BUG-01 fix: file/image resources extracted from the quoted message body.
+   * Populated when the quoted message is of type 'file' or 'image', so that
+   * runAgentBatch can download and archive them alongside direct attachments.
+   */
+  resources: ResourceDescriptor[];
 }
 
 /**
@@ -136,6 +143,7 @@ export async function fetchQuotedContext(
       // — substitute the raw JSON so Claude can still see what was quoted.
       content: expandInteractiveCard(normalized.content, parent.body?.content),
       rawContentType: parent.msg_type ?? 'text',
+      resources: extractResources(parent),
     };
   } catch (err) {
     log.warn('quote', 'normalize-failed', {
@@ -146,12 +154,6 @@ export async function fetchQuotedContext(
   }
 }
 
-/**
- * Render one or more quoted contexts as an XML block intended to sit at the
- * top of the prompt body (after `<bridge_context>`, before the user's actual
- * question). Returns empty string when there are no quotes — keeps callers
- * concatenating without conditional checks.
- */
 export function renderQuotedBlock(quotes: QuotedContext[]): string {
   if (quotes.length === 0) return '';
   const parts = quotes.map((q) => {
@@ -167,4 +169,36 @@ export function renderQuotedBlock(quotes: QuotedContext[]): string {
     return `<quoted_message ${attrs}>\n${q.content}\n</quoted_message>`;
   });
   return parts.join('\n');
+}
+
+/**
+ * BUG-01 fix: extract ResourceDescriptor(s) from a quoted ApiMessageItem.
+ * Exported for unit testing.
+ */
+export function extractResources(item: ApiMessageItem): ResourceDescriptor[] {
+  const msgType = item.msg_type;
+  const raw = item.body?.content;
+  if (!raw || typeof raw !== 'string') return [];
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+
+  if (msgType === 'file') {
+    const fileKey = typeof parsed['file_key'] === 'string' ? parsed['file_key'] : undefined;
+    const fileName = typeof parsed['file_name'] === 'string' ? parsed['file_name'] : undefined;
+    if (!fileKey) return [];
+    return [{ type: 'file', fileKey, ...(fileName ? { fileName } : {}) } as ResourceDescriptor];
+  }
+
+  if (msgType === 'image') {
+    const imageKey = typeof parsed['image_key'] === 'string' ? parsed['image_key'] : undefined;
+    if (!imageKey) return [];
+    return [{ type: 'image', fileKey: imageKey } as ResourceDescriptor];
+  }
+
+  return [];
 }

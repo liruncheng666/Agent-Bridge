@@ -38,7 +38,7 @@ import {
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../core/logger';
-import { MediaCache, type LocalAttachment } from '../media/cache';
+import { MediaCache, type LocalAttachment, type ResourceRequest } from '../media/cache';
 import { archiveAttachments } from '../media/archive';
 import {
   toPolicyAttachment,
@@ -66,6 +66,42 @@ import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
 
 const DEBOUNCE_MS = 600;
+const RESOURCE_STASH_TTL_MS = 5 * 60 * 1000; // 5 minutes: stash resources from non-@bot messages
+
+/**
+ * BUG-02 fix: per-scope resource stash with TTL.
+ * Stores file resources from group messages that arrived without @bot mention,
+ * so a subsequent @bot message can consume them.
+ * Exported for unit testing.
+ */
+export class ResourceStash {
+  private readonly map = new Map<string, { items: ResourceRequest[]; expiresAt: number }>();
+  private readonly ttlMs: number;
+
+  constructor(ttlMs: number = RESOURCE_STASH_TTL_MS) {
+    this.ttlMs = ttlMs;
+  }
+
+  put(scope: string, items: ResourceRequest[]): void {
+    const existing = this.map.get(scope);
+    const merged = existing ? [...existing.items, ...items] : items;
+    this.map.set(scope, { items: merged, expiresAt: Date.now() + this.ttlMs });
+  }
+
+  consume(scope: string): ResourceRequest[] {
+    const entry = this.map.get(scope);
+    if (!entry || entry.expiresAt <= Date.now()) {
+      this.map.delete(scope);
+      return [];
+    }
+    this.map.delete(scope);
+    return entry.items;
+  }
+
+  size(): number {
+    return this.map.size;
+  }
+}
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -210,6 +246,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     : undefined;
   const activePolicyFingerprints = new Map<string, string>();
 
+  // BUG-02 fix: resource stash for "file-then-@bot" pattern.
+  // When a group message has file resources but no @bot mention, we stash those
+  // resources (with a TTL) so a subsequent @bot message in the same scope can
+  // pick them up. This is the common "send file first, then ask bot to process
+  // it" workflow.
+  const resourceStash = new ResourceStash();
+
   const opts: LarkChannelOptions = {
     appId: cfg.accounts.app.id,
     appSecret,
@@ -275,6 +318,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           activePolicyFingerprints,
           scope,
           mode,
+          resourceStash,
           ...(autoGroupWorkspaceBase ? { autoGroupWorkspaceBase } : {}),
         });
       } catch (err) {
@@ -305,6 +349,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           chatModeCache,
           executor,
           pool,
+          resourceStash,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -509,6 +554,7 @@ interface IntakeDeps {
   chatModeCache: ChatModeCache;
   executor: RunExecutor;
   pool: ProcessPool;
+  resourceStash: ResourceStash;
 }
 
 async function intakeMessage(deps: IntakeDeps): Promise<void> {
@@ -525,6 +571,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     chatModeCache,
     executor,
     pool,
+    resourceStash,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
@@ -571,6 +618,16 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     getRequireMentionInGroup(controls.cfg) &&
     !msg.mentionedBot
   ) {
+    // BUG-02 fix: stash file resources from non-@bot messages so a subsequent
+    // @bot message in the same scope can pick them up (5-min TTL).
+    if (msg.resources.length > 0) {
+      const items: ResourceRequest[] = msg.resources.map((r) => ({
+        messageId: msg.messageId,
+        resource: r,
+      }));
+      resourceStash.put(scope, items);
+      log.info('intake', 'stash-resources', { scope, count: items.length });
+    }
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
     return;
   }
@@ -622,6 +679,7 @@ interface RunBatchDeps {
   mode: ChatMode;
   /** SR-2: base dir for per-group workspace isolation; undefined disables it. */
   autoGroupWorkspaceBase?: string;
+  resourceStash: ResourceStash;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -639,6 +697,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     scope,
     mode,
     autoGroupWorkspaceBase,
+    resourceStash,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -648,27 +707,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
 
-  const resourceItems = batch.flatMap((m) =>
-    m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
-  );
-  const attachments = await media.resolve(resourceItems, controls.profileConfig.attachments);
-  if (attachments.length > 0) {
-    log.info('media', 'resolved', { count: attachments.length });
-    for (const attachment of attachments) {
-      log.info('attachment', 'decision', {
-        decision: attachment.decision,
-        kind: attachment.kind,
-        hash: attachment.hash,
-        size: attachment.size,
-        sourceMessageId: attachment.sourceMessageId,
-        reason: attachment.rejectionReason,
-      });
-    }
-  }
-
-  // Collect any reply-quote targets in the batch. Dedup so the same target
-  // quoted by multiple messages in one batch only fetches once. Filter out
-  // ids that are themselves in the batch — those are already in the prompt.
+  // Collect reply-quote targets first so we can merge their file resources
+  // into the media.resolve() call below (BUG-01 fix).
   const batchIds = new Set(batch.map((m) => m.messageId));
   const quoteTargets = [
     ...new Set(
@@ -686,6 +726,38 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         messageId: targetId,
         type: q.rawContentType,
         contentChars: q.content.length,
+        quotedResources: q.resources.length,
+      });
+    }
+  }
+
+  // BUG-02 fix: pull in any stashed resources from pre-@bot file messages.
+  const stashedItems = resourceStash.consume(scope);
+  if (stashedItems.length > 0) {
+    log.info('media', 'stash-consumed', { scope, count: stashedItems.length });
+  }
+
+  // BUG-01 fix: include file resources from quoted messages.
+  const quoteResourceItems: ResourceRequest[] = quotes.flatMap((q) =>
+    q.resources.map((r) => ({ messageId: q.messageId, resource: r })),
+  );
+
+  const resourceItems = [
+    ...stashedItems,
+    ...quoteResourceItems,
+    ...batch.flatMap((m) => m.resources.map((r) => ({ messageId: m.messageId, resource: r }))),
+  ];
+  const attachments = await media.resolve(resourceItems, controls.profileConfig.attachments);
+  if (attachments.length > 0) {
+    log.info('media', 'resolved', { count: attachments.length });
+    for (const attachment of attachments) {
+      log.info('attachment', 'decision', {
+        decision: attachment.decision,
+        kind: attachment.kind,
+        hash: attachment.hash,
+        size: attachment.size,
+        sourceMessageId: attachment.sourceMessageId,
+        reason: attachment.rejectionReason,
       });
     }
   }
