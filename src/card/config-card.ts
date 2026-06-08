@@ -13,33 +13,67 @@ export interface ConfigFormOpts {
   allowedChats: string[];
   admins: string[];
   knownChats: KnownChat[];
-  /** Current chat context: undefined = p2p (private chat). */
-  chatId?: string;
-  /** Group role config for the current chat (undefined = p2p or not configured). */
-  groupRoleConfig?: GroupRoleConfig;
+  /** All group role configs keyed by chatId. Used in p2p /config to show group role management. */
+  groupRoles?: Record<string, GroupRoleConfig>;
 }
 
-function groupRoleElements(opts: ConfigFormOpts): object[] {
-  const config = opts.groupRoleConfig;
-  const collaborators = config?.collaborators ?? [];
-  const participants = config?.participants ?? [];
-  const policy = config?.policy ?? 'strict';
-  const policyLabel = policy === 'open-participant'
-    ? '开放只读（群里未指定的人默认参与人）'
-    : '严格（未指定的人不响应）';
+/** Build the group roles panel shown in p2p /config. */
+function groupRolesPanel(opts: ConfigFormOpts): object[] {
+  const knownChats = opts.knownChats;
+  const groupRoles = opts.groupRoles ?? {};
 
-  return [
+  if (knownChats.length === 0) {
+    return [{
+      tag: 'markdown',
+      content: '_bot 暂不在任何群里，无群角色可管理。_',
+    }];
+  }
+
+  const elements: object[] = [
     {
       tag: 'markdown',
       content:
-        `**群策略**：${policyLabel}\n\n` +
-        `**讨论人**（可读写 workspace，共 ${collaborators.length} 人）\n` +
-        `${atMentionLine(collaborators)}\n\n` +
-        `**参与人**（仅读 workspace，共 ${participants.length} 人）\n` +
-        `${atMentionLine(participants)}\n\n` +
-        '_用 `/role @某人 讨论人|参与人|移除` 管理角色_',
+        '_每个群独立配置。**讨论人**可读写 workspace；**参与人**仅读；**未指定**按群策略处理。_\n\n' +
+        '_修改角色请在群里发 `/role @某人 讨论人|参与人|移除`，或私聊发 `/role <群名> @某人 讨论人`。_',
     },
+    { tag: 'hr' },
   ];
+
+  for (const chat of knownChats) {
+    const cfg = groupRoles[chat.id];
+    const collabCount = cfg?.collaborators.length ?? 0;
+    const partCount = cfg?.participants.length ?? 0;
+    const policy = cfg?.policy ?? 'strict';
+    const policyLabel = policy === 'open-participant' ? '开放只读' : '严格';
+
+    elements.push({
+      tag: 'markdown',
+      content:
+        `**${chat.name}**\n` +
+        `讨论人 ${collabCount} 人 ／ 参与人 ${partCount} 人 ／ 策略：${policyLabel}\n\n` +
+        `_改策略：群内发 \`/role list\` 查看，或私聊发 \`/role ${chat.name} list\`_`,
+    });
+
+    // Policy selector per group
+    elements.push({
+      tag: 'select_static',
+      name: `group_policy_${chat.id}`,
+      initial_option: policy,
+      options: [
+        { text: { tag: 'plain_text', content: '严格（未指定的人不响应）' }, value: 'strict' },
+        { text: { tag: 'plain_text', content: '开放只读（群里人默认参与人）' }, value: 'open-participant' },
+      ],
+    });
+
+    elements.push({ tag: 'hr' });
+  }
+
+  // Remove last hr
+  if (elements.length > 0 && (elements[elements.length - 1] as { tag?: string }).tag === 'hr') {
+    elements.pop();
+  }
+
+  return elements;
 }
 
 function collapsedAccessPanel(title: string, elements: object[]): object {
@@ -211,22 +245,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
             },
             { tag: 'hr' },
             collapsedAccessPanel('🔒 **访问控制**（点击展开）', accessElements),
-            ...(opts.chatId ? [
-              { tag: 'hr' },
-              collapsedAccessPanel('👥 **群角色管理**（点击展开）', groupRoleElements(opts)),
-            ] : [
-              { tag: 'hr' },
-              {
-                tag: 'markdown',
-                content:
-                  '👥 **群角色管理**\n\n' +
-                  '_在群里发 `/config` 可管理该群的讨论人/参与人角色。_\n\n' +
-                  '_已知群（共 ' + opts.knownChats.length + ' 个）：_\n' +
-                  (opts.knownChats.length > 0
-                    ? opts.knownChats.map((c) => `- **${c.name}**（...${c.id.slice(-6)}）`).join('\n')
-                    : '_（bot 暂不在任何群里）_'),
-              },
-            ]),
+            { tag: 'hr' },
+            collapsedAccessPanel('👥 **群角色管理**（点击展开）', groupRolesPanel(opts)),
             {
               tag: 'column_set',
               flex_mode: 'flow',

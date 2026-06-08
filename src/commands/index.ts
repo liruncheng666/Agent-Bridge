@@ -71,7 +71,7 @@ import { RunRejected } from '../runtime/errors';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
-import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
+import { fetchKnownChats, fetchMemberNames, type KnownChat } from '../bot/lark-info';
 
 export interface Controls {
   profile: string;
@@ -1777,39 +1777,76 @@ async function saveAccessConfig(
 // ────────────── /role — group RBAC role management (REQ-03) ──────────────
 
 async function handleRole(args: string, ctx: CommandContext): Promise<void> {
-  if (ctx.chatMode === 'p2p') {
-    await reply(
-      ctx,
-      '❌ `/role` 只能在群里发，用于管理当前群的角色。\n\n在私聊里，请用 `/config` 卡片选群后配置。',
-    );
-    return;
-  }
-
-  const chatId = ctx.msg.chatId;
   const tokens = args.trim().split(/\s+/).filter(Boolean);
   const sub = tokens[0]?.toLowerCase();
 
+  // ── Private-chat path: /role list [<chatId>] or /role <chatId> @某人 角色 ──
+  if (ctx.chatMode === 'p2p') {
+    // In p2p, first non-mention token is treated as chatId when no sub matches a role action.
+    // Syntax: /role list [<chatId>]  OR  /role <chatId> @某人 讨论人|参与人|移除
+    const knownChats = ctx.controls.knownChats ?? [];
+
+    if (!sub || sub === 'list') {
+      // /role list — show all groups with their role configs
+      if (knownChats.length === 0) {
+        await reply(ctx, '_bot 暂不在任何群里，无法查看群角色配置。_');
+        return;
+      }
+      const lines = knownChats.map((chat) => {
+        const cfg = ctx.controls.profileConfig.access.groupRoles[chat.id];
+        const collabCount = cfg?.collaborators.length ?? 0;
+        const partCount = cfg?.participants.length ?? 0;
+        const policy = cfg?.policy ?? 'strict';
+        const policyTag = policy === 'open-participant' ? '开放只读' : '严格';
+        return `**${chat.name}**（\`...${chat.id.slice(-6)}\`）— 讨论人 ${collabCount} 人 / 参与人 ${partCount} 人 / ${policyTag}`;
+      });
+      await reply(
+        ctx,
+        `**所有群角色概览**\n\n${lines.join('\n')}\n\n_在群里发 \`/role list\` 查详情，或用 \`/role <群名> list\` 查指定群。_`,
+      );
+      return;
+    }
+
+    // Try to match first token as chat name or chatId
+    const chatIdOrName = tokens[0] ?? '';
+    const targetChat = knownChats.find(
+      (c) => c.id === chatIdOrName || c.name === chatIdOrName || c.id.endsWith(chatIdOrName),
+    );
+    if (!targetChat) {
+      await reply(
+        ctx,
+        '私聊里用 `/role` 需要先指定群名，例如：\n' +
+        '• `/role <群名> list` — 查看该群角色\n' +
+        '• `/role <群名> @某人 讨论人|参与人|移除` — 修改角色\n\n' +
+        '_群名用 `/role list` 查看_',
+      );
+      return;
+    }
+
+    const restTokens = tokens.slice(1);
+    const restSub = restTokens[0]?.toLowerCase();
+    if (!restSub || restSub === 'list') {
+      await replyGroupRoleList(ctx, targetChat.id, targetChat.name);
+      return;
+    }
+
+    // /role <chatId> @某人 讨论人|参与人|移除
+    const targets = mentionTargets(ctx);
+    const roleToken = restTokens.find((t) => /^(讨论人|参与人|移除|collaborator|participant|remove)$/.test(t));
+    if (targets.length === 0 || !roleToken) {
+      await reply(ctx, `❌ 请指定 @某人 和角色（讨论人 / 参与人 / 移除）。\n例：\`/role ${targetChat.name} @某人 讨论人\``);
+      return;
+    }
+    await applyRoleChange(ctx, targetChat.id, targets, roleToken);
+    return;
+  }
+
+  // ── Group chat path ──
+  const chatId = ctx.msg.chatId;
+
   // /role list
   if (!sub || sub === 'list') {
-    const groupConfig = ctx.controls.profileConfig.access.groupRoles[chatId];
-    const collaborators = groupConfig?.collaborators ?? [];
-    const participants = groupConfig?.participants ?? [];
-    const policy = groupConfig?.policy ?? 'strict';
-    const policyLabel = policy === 'open-participant' ? '开放只读（群里未指定的人默认参与人）' : '严格（未指定的人不响应）';
-    const colLine = collaborators.length > 0
-      ? collaborators.map((id) => `<at id="${id}"></at>`).join('  ')
-      : '_（暂无）_';
-    const parLine = participants.length > 0
-      ? participants.map((id) => `<at id="${id}"></at>`).join('  ')
-      : '_（暂无）_';
-    await reply(
-      ctx,
-      `**当前群角色配置**\n\n` +
-      `**讨论人**（可读写 workspace）：${colLine}\n\n` +
-      `**参与人**（仅读 workspace）：${parLine}\n\n` +
-      `**群策略**：${policyLabel}\n\n` +
-      `_用 \`/role @某人 讨论人|参与人|移除\` 管理角色_`,
-    );
+    await replyGroupRoleList(ctx, chatId);
     return;
   }
 
@@ -1824,18 +1861,63 @@ async function handleRole(args: string, ctx: CommandContext): Promise<void> {
       '• `/role @某人 讨论人` — 设为讨论人（可读写 workspace）\n' +
       '• `/role @某人 参与人` — 设为参与人（仅读 workspace）\n' +
       '• `/role @某人 移除` — 从角色名单移除\n' +
-      '• `/role list` — 查看当前群角色配置',
+      '• `/role list` — 查看当前群角色配置\n\n' +
+      '_私聊里用法：`/role <群名> @某人 讨论人`_',
     );
     return;
   }
 
+  await applyRoleChange(ctx, chatId, targets, roleToken);
+}
+
+/** Show role config for a group, resolving openIds to display names. */
+async function replyGroupRoleList(
+  ctx: CommandContext,
+  chatId: string,
+  chatName?: string,
+): Promise<void> {
+  const groupConfig = ctx.controls.profileConfig.access.groupRoles[chatId];
+  const collaborators = groupConfig?.collaborators ?? [];
+  const participants = groupConfig?.participants ?? [];
+  const policy = groupConfig?.policy ?? 'strict';
+  const policyLabel = policy === 'open-participant'
+    ? '开放只读（群里未指定的人默认参与人）'
+    : '严格（未指定的人不响应）';
+
+  // Fetch display names from the group's member list.
+  const allIds = [...new Set([...collaborators, ...participants])];
+  const nameMap = await fetchMemberNames(ctx.channel, chatId, allIds);
+
+  const formatList = (ids: string[]): string => {
+    if (ids.length === 0) return '_（暂无）_';
+    return ids.map((id) => nameMap.get(id) ?? `...${id.slice(-6)}`).join('、');
+  };
+
+  const title = chatName ? `**${chatName}** 群角色配置` : '**当前群角色配置**';
+  await reply(
+    ctx,
+    `${title}\n\n` +
+    `**讨论人**（可读写 workspace）：${formatList(collaborators)}\n\n` +
+    `**参与人**（仅读 workspace）：${formatList(participants)}\n\n` +
+    `**群策略**：${policyLabel}\n\n` +
+    `_用 \`/role @某人 讨论人|参与人|移除\` 管理角色_`,
+  );
+}
+
+/** Apply a role change for a set of mention targets in a group. */
+async function applyRoleChange(
+  ctx: CommandContext,
+  chatId: string,
+  targets: Array<{ openId: string; name?: string }>,
+  roleToken: string,
+): Promise<void> {
   const normalizedRole = /^(讨论人|collaborator)$/.test(roleToken)
     ? 'collaborator'
     : /^(参与人|participant)$/.test(roleToken)
       ? 'participant'
       : 'remove';
 
-  const names = targets.map((t) => t.name ?? t.openId);
+  const names = targets.map((t) => t.name ?? `...${t.openId.slice(-6)}`);
   await saveGroupRoleConfig(ctx, chatId, (current) => {
     const collabs = new Set(current.collaborators);
     const parts = new Set(current.participants);
@@ -1875,6 +1957,18 @@ async function saveGroupRoleConfig(
 // ────────────── /config — preferences form ──────────────
 
 async function handleConfig(args: string, ctx: CommandContext): Promise<void> {
+  // /config is a global management panel — private chat only.
+  // In groups, redirect to /role for group-specific role management.
+  if (ctx.chatMode !== 'p2p') {
+    await reply(
+      ctx,
+      '`/config` 只能在私聊里使用（全局管理面板）。\n\n' +
+      '需要管理当前群的角色？请使用：\n' +
+      '• `/role @某人 讨论人|参与人|移除`\n' +
+      '• `/role list` — 查看当前群角色配置',
+    );
+    return;
+  }
   const sub = args.trim().split(/\s+/)[0] ?? '';
   switch (sub) {
     case '':
@@ -1900,7 +1994,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
 
   const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
   const access = ctx.controls.profileConfig.access;
-  const chatId = ctx.chatMode !== 'p2p' ? ctx.msg.chatId : undefined;
+  // /config is p2p-only now — chatId is always undefined here.
   const card = configFormCard({
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
@@ -1911,8 +2005,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     allowedChats: access.allowedChats,
     admins: access.admins,
     knownChats: ctx.controls.knownChats ?? [],
-    chatId,
-    groupRoleConfig: chatId ? access.groupRoles[chatId] : undefined,
+    groupRoles: access.groupRoles,
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
