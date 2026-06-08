@@ -1,4 +1,5 @@
 import type { KnownChat } from '../bot/lark-info';
+import type { GroupRoleConfig } from '../config/profile-schema';
 import type { MessageReplyMode } from '../config/schema';
 
 export interface ConfigFormOpts {
@@ -12,6 +13,33 @@ export interface ConfigFormOpts {
   allowedChats: string[];
   admins: string[];
   knownChats: KnownChat[];
+  /** Current chat context: undefined = p2p (private chat). */
+  chatId?: string;
+  /** Group role config for the current chat (undefined = p2p or not configured). */
+  groupRoleConfig?: GroupRoleConfig;
+}
+
+function groupRoleElements(opts: ConfigFormOpts): object[] {
+  const config = opts.groupRoleConfig;
+  const collaborators = config?.collaborators ?? [];
+  const participants = config?.participants ?? [];
+  const policy = config?.policy ?? 'strict';
+  const policyLabel = policy === 'open-participant'
+    ? '开放只读（群里未指定的人默认参与人）'
+    : '严格（未指定的人不响应）';
+
+  return [
+    {
+      tag: 'markdown',
+      content:
+        `**群策略**：${policyLabel}\n\n` +
+        `**讨论人**（可读写 workspace，共 ${collaborators.length} 人）\n` +
+        `${atMentionLine(collaborators)}\n\n` +
+        `**参与人**（仅读 workspace，共 ${participants.length} 人）\n` +
+        `${atMentionLine(participants)}\n\n` +
+        '_用 `/role @某人 讨论人|参与人|移除` 管理角色_',
+    },
+  ];
 }
 
 function collapsedAccessPanel(title: string, elements: object[]): object {
@@ -183,6 +211,22 @@ export function configFormCard(opts: ConfigFormOpts): object {
             },
             { tag: 'hr' },
             collapsedAccessPanel('🔒 **访问控制**（点击展开）', accessElements),
+            ...(opts.chatId ? [
+              { tag: 'hr' },
+              collapsedAccessPanel('👥 **群角色管理**（点击展开）', groupRoleElements(opts)),
+            ] : [
+              { tag: 'hr' },
+              {
+                tag: 'markdown',
+                content:
+                  '👥 **群角色管理**\n\n' +
+                  '_在群里发 `/config` 可管理该群的讨论人/参与人角色。_\n\n' +
+                  '_已知群（共 ' + opts.knownChats.length + ' 个）：_\n' +
+                  (opts.knownChats.length > 0
+                    ? opts.knownChats.map((c) => `- **${c.name}**（...${c.id.slice(-6)}）`).join('\n')
+                    : '_（bot 暂不在任何群里）_'),
+              },
+            ]),
             {
               tag: 'column_set',
               flex_mode: 'flow',

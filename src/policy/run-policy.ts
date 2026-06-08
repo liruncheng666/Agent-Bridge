@@ -2,15 +2,13 @@ import type { AgentCapability } from '../agent/capability';
 import {
   accessToClaudePermissionMode,
   accessToCodexSandbox,
-  applyAccessCeiling,
   clampAccess,
-  scenarioMaxAccess,
   type AccessMode,
   type ClaudePermissionMode,
   type CodexSandboxMode,
 } from '../config/permissions';
 import type { ProfileConfig } from '../config/profile-schema';
-import type { AccessDecision } from './access';
+import type { AccessDecision, GroupRole } from './access';
 import {
   accessPolicyDigest,
   attachmentPolicyConfigDigest,
@@ -63,7 +61,18 @@ export interface RunPolicyInput {
    * comment / catalog-identity call sites that don't set it.
    */
   chatType?: 'p2p' | 'group';
-  /** Whether the message sender is the bot owner (creator). Defaults to false. */
+  /**
+   * Resolved RBAC role for the message sender in this chat (REQ-03).
+   * Replaces the old `isOwner` boolean. Defaults to 'owner' when omitted
+   * so that call sites that don't set it (comments, card actions) retain
+   * the same full-access behavior as before.
+   */
+  role?: GroupRole;
+  /**
+   * @deprecated Use `role` instead. Kept for backward-compatibility with
+   * call sites not yet migrated to resolveRole(). When both are set, `role`
+   * takes precedence.
+   */
   isOwner?: boolean;
   /**
    * Per-scope access override set via `/permission` (SR-5). When provided it
@@ -130,12 +139,23 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     input.profileConfig.permissions.maxAccess,
     input.capability.permissions.maxAccess,
   );
-  // SR-1: apply the per-scenario ceiling (group chats are tiered down) on top
-  // of the profile/capability clamp. Only ever lowers access, never raises it.
-  const accessMode = applyAccessCeiling(
-    baseAccess,
-    scenarioMaxAccess(input.chatType ?? 'p2p', input.isOwner ?? false),
-  );
+
+  // REQ-03: Role-based scenario ceiling.
+  // `role` (from resolveRole) drives the ceiling directly.
+  // Falls back to the old isOwner-based scenarioMaxAccess for call sites
+  // (comments, card actions) that haven't migrated to resolveRole yet.
+  let accessMode: AccessMode;
+  if (input.role !== undefined) {
+    const roleCeiling = roleToScenarioCeiling(input.role, input.chatType ?? 'p2p');
+    accessMode = ACCESS_ORDER[baseAccess] <= ACCESS_ORDER[roleCeiling] ? baseAccess : roleCeiling;
+  } else {
+    // Legacy path: SR-1 scenarioMaxAccess
+    const isOwner = input.isOwner ?? false;
+    const ceiling: AccessMode = input.chatType === 'group'
+      ? (isOwner ? 'workspace' : 'read-only')
+      : 'full';
+    accessMode = ACCESS_ORDER[baseAccess] <= ACCESS_ORDER[ceiling] ? baseAccess : ceiling;
+  }
   const sandbox = accessToCodexSandbox(accessMode);
   const permissionMode = accessToClaudePermissionMode(
     accessMode,
@@ -177,12 +197,32 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
   };
 }
 
-function reject(code: RunPolicyReject['rejectReason']['code'], userVisible: string): RunPolicyReject {
-  return {
-    ok: false,
-    rejectReason: {
-      code,
-      userVisible,
-    },
-  };
+const ACCESS_ORDER: Record<AccessMode, number> = {
+  'read-only': 0,
+  workspace: 1,
+  full: 2,
+};
+
+/**
+ * Map a GroupRole + chatType to the maximum AccessMode allowed in that scenario.
+ * p2p is always unrestricted (owner accessing their own machine).
+ * In group chats: owner/collaborator → full; participant/denied → read-only.
+ */
+function roleToScenarioCeiling(role: GroupRole, chatType: 'p2p' | 'group'): AccessMode {
+  if (chatType === 'p2p') return 'full';
+  switch (role) {
+    case 'owner':
+    case 'collaborator':
+      return 'full';
+    case 'participant':
+    case 'denied':
+      return 'read-only';
+  }
+}
+
+function reject(
+  code: RunPolicyReject['rejectReason']['code'],
+  userVisible: string,
+): RunPolicyReject {
+  return { ok: false, rejectReason: { code, userVisible } };
 }

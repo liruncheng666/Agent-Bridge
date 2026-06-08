@@ -17,11 +17,29 @@ export type AgentKind = 'claude' | 'codex';
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
 
+/** Group-level role for a specific user within a specific chat. */
+export type GroupRole = 'collaborator' | 'participant';
+
+/** Group-level access policy for users not explicitly assigned a role. */
+export type GroupPolicy = 'strict' | 'open-participant';
+
+/** Per-group role configuration keyed by chatId. */
+export interface GroupRoleConfig {
+  /** Users who can read and write within the workspace. */
+  collaborators: string[];
+  /** Users who can only read within the workspace. */
+  participants: string[];
+  /** How to handle users not listed above. Default: 'strict' (deny). */
+  policy: GroupPolicy;
+}
+
 export interface ProfileAccess {
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
   requireMentionInGroup: boolean;
+  /** Per-group role assignments keyed by chatId (REQ-03). */
+  groupRoles: Record<string, GroupRoleConfig>;
 }
 
 export interface SandboxConfig {
@@ -239,7 +257,29 @@ function normalizeAccess(
     allowedChats: stringArray(access?.allowedChats),
     admins: stringArray(access?.admins),
     requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
+    groupRoles: normalizeGroupRoles(access?.groupRoles),
   };
+}
+
+function normalizeGroupPolicy(value: unknown): GroupPolicy {
+  return value === 'open-participant' ? 'open-participant' : 'strict';
+}
+
+function normalizeGroupRoles(
+  input: Record<string, unknown> | undefined,
+): Record<string, GroupRoleConfig> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const result: Record<string, GroupRoleConfig> = {};
+  for (const [chatId, raw] of Object.entries(input)) {
+    if (!chatId || typeof raw !== 'object' || !raw) continue;
+    const entry = raw as Record<string, unknown>;
+    result[chatId] = {
+      collaborators: stringArray(entry['collaborators']),
+      participants: stringArray(entry['participants']),
+      policy: normalizeGroupPolicy(entry['policy']),
+    };
+  }
+  return result;
 }
 
 function normalizeWorkspaces(input: {

@@ -4,7 +4,7 @@ import type { AgentCapability } from '../agent/capability';
 import type { AgentEvent } from '../agent/types';
 import type { AccessMode } from '../config/permissions';
 import type { ProfileConfig } from '../config/profile-schema';
-import type { AccessDecision } from '../policy/access';
+import type { AccessDecision, GroupRole } from '../policy/access';
 import {
   evaluateRunPolicy,
   type AgentAttachment,
@@ -39,7 +39,13 @@ export interface StartRunFlowInput {
   stopGraceMs?: number;
   /** IM chat type for SR-1 scenario permission tiering. Omit for p2p default. */
   chatType?: 'p2p' | 'group';
-  /** Whether the sender is the bot owner (SR-1). Defaults to false. */
+  /**
+   * Resolved RBAC role for the sender (REQ-03). Replaces isOwner.
+   * When set, drives the scenario permission ceiling directly.
+   * Defaults to legacy isOwner path when omitted (backward-compat).
+   */
+  role?: GroupRole;
+  /** @deprecated Use `role` instead. */
   isOwner?: boolean;
   /**
    * Base directory for SR-2 per-group workspace isolation. When set and the
@@ -118,7 +124,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     codexHome: input.profileConfig.codex?.codexHome,
     inheritCodexHome: input.profileConfig.codex?.inheritCodexHome,
     ...(input.chatType ? { chatType: input.chatType } : {}),
-    ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
+    ...(input.role !== undefined ? { role: input.role } : input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
     ...(input.accessOverride ? { accessOverride: input.accessOverride } : {}),
   });
   if (!policy.ok) {

@@ -44,7 +44,7 @@ import {
   toPolicyAttachment,
   toPromptAttachment,
 } from '../media/attachment';
-import { canUseDm, canUseGroup, isCreator } from '../policy/access';
+import { canUseDm, canUseGroup, isCreator, resolveRole } from '../policy/access';
 import type { ScopeContext } from '../policy/run-policy';
 import { createOwnerRefreshController, type OwnerRawClient } from '../policy/owner';
 import { RunExecutor } from '../runtime/run-executor';
@@ -803,7 +803,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   };
 
   const chatType: 'p2p' | 'group' = firstMsg.chatType === 'p2p' ? 'p2p' : 'group';
-  const isOwner = isCreator(controls, firstMsg.senderId);
+  const role = chatType === 'p2p'
+    ? ('owner' as const)
+    : resolveRole(firstMsg.senderId, chatId, controls, controls.profileConfig);
   const accessDecision =
     chatType === 'p2p'
       ? canUseDm(controls.profileConfig, controls, firstMsg.senderId)
@@ -837,7 +839,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     chatType,
-    isOwner,
+    role,
     ...(autoGroupWorkspaceBase ? { autoGroupWorkspaceBase } : {}),
     ...(scopeModel ? { model: scopeModel } : {}),
     ...(scopeAccessOverride ? { accessOverride: scopeAccessOverride } : {}),

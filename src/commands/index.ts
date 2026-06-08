@@ -164,7 +164,7 @@ const handlers: Record<string, Handler> = {
   '/stop': handleStop,
   '/timeout': handleTimeout,
   '/model': handleModel,
-  '/permission': handlePermission,
+  '/permission': handlePermissionDeprecated,
   '/ps': handlePs,
   '/exit': handleExit,
   '/doctor': handleDoctor,
@@ -172,6 +172,7 @@ const handlers: Record<string, Handler> = {
   '/doc': handleDoc,
   '/invite': handleInvite,
   '/remove': handleRemove,
+  '/role': handleRole,
 };
 
 /**
@@ -191,6 +192,7 @@ const ADMIN_COMMANDS = new Set([
   '/invite',
   '/remove',
   '/permission',
+  '/role',
 ]);
 
 function isAdminCommand(cmd: string): boolean {
@@ -944,6 +946,21 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(scope);
   log.info('command', 'model-set', { scope, model: resolved });
   await reply(ctx, `✅ 当前 session 模型已设为 \`${resolved}\`。(下条消息生效)`);
+}
+
+// ────────────── /permission — deprecated (REQ-03) ──────────────
+
+async function handlePermissionDeprecated(args: string, ctx: CommandContext): Promise<void> {
+  await reply(
+    ctx,
+    '⚠️ `/permission` 已废弃。\n\n' +
+    '角色权限现在由 `/role` 管理：\n' +
+    '• `/role @某人 讨论人` — 设为讨论人（可读写 workspace）\n' +
+    '• `/role @某人 参与人` — 设为参与人（仅读 workspace）\n' +
+    '• `/role list` — 查看当前群角色配置\n\n' +
+    '使用 `/config` 管理群策略。',
+  );
+  void args;
 }
 
 // ────────────── /permission — per-scope access override (SR-5) ──────────────
@@ -1813,6 +1830,104 @@ async function saveAccessConfig(
   }
 }
 
+// ────────────── /role — group RBAC role management (REQ-03) ──────────────
+
+async function handleRole(args: string, ctx: CommandContext): Promise<void> {
+  if (ctx.chatMode === 'p2p') {
+    await reply(
+      ctx,
+      '❌ `/role` 只能在群里发，用于管理当前群的角色。\n\n在私聊里，请用 `/config` 卡片选群后配置。',
+    );
+    return;
+  }
+
+  const chatId = ctx.msg.chatId;
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  const sub = tokens[0]?.toLowerCase();
+
+  // /role list
+  if (!sub || sub === 'list') {
+    const groupConfig = ctx.controls.profileConfig.access.groupRoles[chatId];
+    const collaborators = groupConfig?.collaborators ?? [];
+    const participants = groupConfig?.participants ?? [];
+    const policy = groupConfig?.policy ?? 'strict';
+    const policyLabel = policy === 'open-participant' ? '开放只读（群里未指定的人默认参与人）' : '严格（未指定的人不响应）';
+    const colLine = collaborators.length > 0
+      ? collaborators.map((id) => `<at id="${id}"></at>`).join('  ')
+      : '_（暂无）_';
+    const parLine = participants.length > 0
+      ? participants.map((id) => `<at id="${id}"></at>`).join('  ')
+      : '_（暂无）_';
+    await reply(
+      ctx,
+      `**当前群角色配置**\n\n` +
+      `**讨论人**（可读写 workspace）：${colLine}\n\n` +
+      `**参与人**（仅读 workspace）：${parLine}\n\n` +
+      `**群策略**：${policyLabel}\n\n` +
+      `_用 \`/role @某人 讨论人|参与人|移除\` 管理角色_`,
+    );
+    return;
+  }
+
+  // /role @某人 讨论人|参与人|移除
+  const targets = mentionTargets(ctx);
+  const roleToken = tokens.find((t) => /^(讨论人|参与人|移除|collaborator|participant|remove)$/.test(t));
+
+  if (targets.length === 0 || !roleToken) {
+    await reply(
+      ctx,
+      '用法：\n' +
+      '• `/role @某人 讨论人` — 设为讨论人（可读写 workspace）\n' +
+      '• `/role @某人 参与人` — 设为参与人（仅读 workspace）\n' +
+      '• `/role @某人 移除` — 从角色名单移除\n' +
+      '• `/role list` — 查看当前群角色配置',
+    );
+    return;
+  }
+
+  const normalizedRole = /^(讨论人|collaborator)$/.test(roleToken)
+    ? 'collaborator'
+    : /^(参与人|participant)$/.test(roleToken)
+      ? 'participant'
+      : 'remove';
+
+  const names = targets.map((t) => t.name ?? t.openId);
+  await saveGroupRoleConfig(ctx, chatId, (current) => {
+    const collabs = new Set(current.collaborators);
+    const parts = new Set(current.participants);
+    for (const { openId } of targets) {
+      collabs.delete(openId);
+      parts.delete(openId);
+      if (normalizedRole === 'collaborator') collabs.add(openId);
+      else if (normalizedRole === 'participant') parts.add(openId);
+    }
+    return { ...current, collaborators: [...collabs], participants: [...parts] };
+  });
+
+  const action =
+    normalizedRole === 'collaborator' ? '设为**讨论人**（可读写 workspace）' :
+    normalizedRole === 'participant' ? '设为**参与人**（仅读 workspace）' :
+    '从角色名单**移除**';
+  await reply(ctx, `✅ 已将 ${names.join('、')} ${action}。`);
+}
+
+async function saveGroupRoleConfig(
+  ctx: CommandContext,
+  chatId: string,
+  mutate: (current: import('../config/profile-schema').GroupRoleConfig) => import('../config/profile-schema').GroupRoleConfig,
+): Promise<void> {
+  await saveAccessConfig(ctx, (access) => {
+    const existing = access.groupRoles[chatId] ?? { collaborators: [], participants: [], policy: 'strict' as const };
+    return {
+      ...access,
+      groupRoles: {
+        ...access.groupRoles,
+        [chatId]: mutate(existing),
+      },
+    };
+  });
+}
+
 // ────────────── /config — preferences form ──────────────
 
 async function handleConfig(args: string, ctx: CommandContext): Promise<void> {
@@ -1841,6 +1956,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
 
   const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
   const access = ctx.controls.profileConfig.access;
+  const chatId = ctx.chatMode !== 'p2p' ? ctx.msg.chatId : undefined;
   const card = configFormCard({
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
@@ -1851,6 +1967,8 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     allowedChats: access.allowedChats,
     admins: access.admins,
     knownChats: ctx.controls.knownChats ?? [],
+    chatId,
+    groupRoleConfig: chatId ? access.groupRoles[chatId] : undefined,
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
