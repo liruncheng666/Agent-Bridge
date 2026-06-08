@@ -142,7 +142,11 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/status` | Show profile, agent, working directory, session, and run state |
-| `/config` | Adjust presentation preferences and view the access panel |
+| `/config` | Adjust presentation preferences and view the access panel; shows group role panel inside groups |
+| `/role @name collaborator` | Set someone as a collaborator in the current group (can read/write workspace) |
+| `/role @name participant` | Set someone as a participant in the current group (read-only) |
+| `/role @name remove` | Remove someone from the current group role list |
+| `/role list` | Show current group role configuration |
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
 | `/invite group` | Allow the current group to use the bot |
@@ -216,43 +220,76 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 
 Set `LARK_CHANNEL_HOME=/path/to/state` to move all local bridge state. `AGENT_BRIDGE_LOG_DAYS` overrides log retention.
 
-## Access control
+## Access control and group roles
 
-**Chat access is private by default: out of the box, only *you* can use the bot in DMs and groups.** "You" = whoever created / owns the Feishu app (the person who scanned the QR to set it up). The bot figures out who the app owner is automatically from Feishu, so **solo chat use needs zero configuration** — you can DM it and `@`-mention it in any group, and everyone else's chat messages are silently ignored (no "permission denied" reply, which would only confirm the bot exists). Cloud-doc comments are document-scoped; see below.
+**Chat access is private by default: out of the box, only *you* can use the bot in DMs and groups.** "You" = whoever created / owns the Feishu app (the person who scanned the QR to set it up). The bot figures out who the app owner is automatically from Feishu, so **solo chat use needs zero configuration** — you can DM it and `@`-mention it in any group, and everyone else's chat messages are silently ignored. Cloud-doc comments are document-scoped; see below.
 
-To let other people or groups in, add them to one of three lists:
+### Three-tier group roles
+
+Roles are **per-group** — the same person can have different roles in different groups:
+
+| Role | ID | Source | Inside workspace | Outside workspace |
+|---|---|---|---|---|
+| **Owner** | `owner` | App creator (resolved at runtime) | Full read/write + commands | Full read/write + commands |
+| **Collaborator** | `collaborator` | Owner assigns via `/role` in the group | ✅ Read/write + commands | Restricted |
+| **Participant** | `participant` | Others (per group policy) | ✅ Read-only | Restricted |
+
+**Managing roles:**
+```
+/role @name collaborator   # set someone as collaborator in current group
+/role @name participant    # set as participant (read-only)
+/role @name remove         # remove from role list
+/role list                 # show current group role config
+```
+
+DM the bot and send `/config` to manage roles across groups from a single view.
+
+### Group policy
+
+Each group can set a default visitor policy:
+
+| Policy | Effect |
+|---|---|
+| `strict` (default) | Users not in any role list → silently ignored |
+| `open-participant` | Everyone in the group defaults to participant (read-only) |
+
+Send `/config` inside the group to switch the policy.
+
+### Basic access control (legacy / DM)
+
+For DM access and admin privileges, use the original invite commands:
 
 | List | Controls | Add | Remove |
 |------|----------|-----|--------|
 | **Allowed users** | who can DM the bot | `/invite user @them` | `/remove user @them` |
-| **Allowed chats** | which groups the bot answers in (for **everyone** in them) | `/invite group` (current group) / `/invite all group` (every group the bot is in) | `/remove group` (current group) |
-| **Admins** | who can change settings, and use the bot in any group | `/invite admin @them` | `/remove admin @them` |
+| **Allowed chats** | which groups the bot answers in (everyone inside) | `/invite group` / `/invite all group` | `/remove group` |
+| **Admins** | who can change settings and use the bot in any group | `/invite admin @them` | `/remove admin @them` |
 
-> `/invite` and `/remove` can only be run by **you (the creator) and admins**. The `@` in the command points at the *target person* (not the bot) — the bot resolves the mention to their identity, so you never deal with raw IDs.
+> `/invite`, `/remove`, and `/role` can only be run by **you (the creator) and admins**.
 
 ### Two identities that bypass everything
 
-- **You (the creator)**: subject to no list at all — DMs, any group, every command. You **can never lock yourself out**: even if the lists get messed up, DM the bot and send `/config` to get back in. Transfer the app's ownership in the Feishu console and the bot follows the new owner automatically.
-- **Admins**: can DM, run management commands like `/config`, and **bypass the allowed-chats list** — the bot answers them in any group, listed or not. Good for teammates who co-maintain the bot.
+- **You (the creator)**: subject to no list at all — DMs, any group, every command. You **can never lock yourself out**: even if the lists get messed up, DM the bot and send `/config` to get back in.
+- **Admins**: can DM, run management commands like `/config`, and bypass the allowed-chats list.
 
 ### Common setups
 
 - **Just me** → nothing to do; this is the default.
+- **Let a teammate collaborate (read/write workspace)** → `/role @them collaborator` in the group
+- **Open a group to read-only for everyone** → `/config` → set group policy to `open-participant`
 - **Let a teammate DM the bot** → `/invite user @them`
-- **Open a work group to everyone in it** → send `/invite group` inside that group
-- **First-time setup, onboard every group the bot is already in** → `/invite all group` pulls them all into the list at once; trim with `/remove group` afterwards
 - **Add a co-admin** → `/invite admin @them`
 
 ### Worth knowing
 
 - Changes take effect on the **next message** — no restart needed.
-- **In groups you must `@` the bot first** (DMs don't need it). That's a separate toggle (`/config` → "require @ in groups"), independent of the lists above.
-- Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
-- Cloud-doc comments are document-scoped: anyone who can comment in a supported document and mention the bot can trigger a reply.
+- **In groups you must `@` the bot first** (DMs don't need it). That's a separate toggle (`/config` → "require @ in groups").
+- Strangers get pure silence — no reply at all.
+- Cloud-doc comments are document-scoped: anyone who can comment and mention the bot can trigger a reply.
 
 ### Advanced: editing the config file directly
 
-If you'd rather not do it inside Feishu, `/invite` and `/config` write the matching profile's `access` field in `~/.agent-bridge/config.json`. Empty lists mean nobody from that list, not open access. This is a profile-field snippet; do not replace the whole `config.json` with it:
+`/role`, `/invite`, and `/config` write the profile's `access` field in `~/.agent-bridge/config.json`:
 
 ```json
 {
@@ -264,20 +301,27 @@ If you'd rather not do it inside Feishu, `/invite` and `/config` write the match
         "allowedUsers": ["ou_xxxxxxxxxxxxx"],
         "allowedChats": ["oc_xxxxxxxxxxxxx"],
         "admins": ["ou_xxxxxxxxxxxxx"],
-        "requireMentionInGroup": true
+        "requireMentionInGroup": true,
+        "groupRoles": {
+          "oc_xxxxxxxxxxxxx": {
+            "collaborators": ["ou_aaaaaaaaaaaaaaaa"],
+            "participants": ["ou_bbbbbbbbbbbbbbbb"],
+            "policy": "strict"
+          }
+        }
       }
     }
   }
 }
 ```
 
-`allowedUsers` / `admins` take user `open_id`s; `allowedChats` takes group `chat_id`s. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check the active profile's log:
+To find IDs: have the person message the bot, then check the log:
 
 ```bash
 grep '"event":"enter"' ~/.agent-bridge/profiles/<profile>/logs/bridge-$(date +%Y%m%d).jsonl | tail -5
 ```
 
-Each line carries `chatId` (group / DM id) and `senderId` (user `open_id`). After a manual edit, **restart the bridge** or send `/reconnect` from an allowed admin context to apply it. For day-to-day tweaks `/invite` / `/config` are easier; direct edits are mainly for deployment scripts that pre-seed access.
+Each line carries `chatId` and `senderId`. After a manual edit, **restart the bridge** or send `/reconnect` to apply it.
 
 ## Cloud-doc comments
 

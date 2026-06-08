@@ -28,7 +28,6 @@ import type { ProfileAccess, ProfileConfig } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import {
   accessToClaudePermissionMode,
-  scenarioMaxAccess,
   type AccessMode,
 } from '../config/permissions';
 import {
@@ -963,64 +962,9 @@ async function handlePermissionDeprecated(args: string, ctx: CommandContext): Pr
   void args;
 }
 
-// ────────────── /permission — per-scope access override (SR-5) ──────────────
-
-async function handlePermission(args: string, ctx: CommandContext): Promise<void> {
-  const input = args.trim().toLowerCase();
-  const scope = ctx.scope;
-  const isP2p = ctx.chatMode === 'p2p';
-  const isOwner = isCreator(ctx.controls, ctx.msg.senderId);
-  // The SR-1 scenario ceiling that still applies on top of any override.
-  const ceiling = scenarioMaxAccess(isP2p ? 'p2p' : 'group', isOwner);
-  const ceilingNote =
-    ceiling === 'full'
-      ? ''
-      : `\n\n⚠️ 当前场景（${isP2p ? '私聊' : '群聊'}${isOwner ? '·owner' : '·非owner'}）的安全上限是 \`${ceiling}\`，更高的设置会被自动压到该上限。`;
-  const usage =
-    '\n\n用法:\n- `/permission` 查看当前设置\n- `/permission read-only` / `workspace` / `full`\n- `/permission default` 清除覆盖,回到 profile 默认\n\n_注:权限是当前 session 级,且始终受场景安全上限约束_';
-
-  if (!input) {
-    const current = ctx.sessions.getAccessOverride(scope);
-    await reply(
-      ctx,
-      current
-        ? `🔒 当前 session 权限覆盖: \`${current}\`${ceilingNote}${usage}`
-        : `🔒 当前 session 权限: 跟随 profile 默认 (\`${ctx.controls.profileConfig.permissions.defaultAccess}\`)${ceilingNote}${usage}`,
-    );
-    return;
-  }
-
-  if (input === 'default') {
-    const cleared = ctx.sessions.clearAccessOverride(scope);
-    ctx.activeRuns.interrupt(scope);
-    log.info('command', 'permission-clear', { scope, cleared });
-    await reply(
-      ctx,
-      cleared
-        ? '✅ 已清除权限覆盖,回到 profile 默认。(已结束当前运行,下条消息生效)'
-        : '当前 session 本来就没设过权限覆盖,跟随 profile 默认。',
-    );
-    return;
-  }
-
-  if (!isAccessModeInput(input)) {
-    await reply(ctx, '❌ 用法:`/permission read-only|workspace|full` 或 `/permission default`');
-    return;
-  }
-
-  ctx.sessions.setAccessOverride(scope, input);
-  ctx.activeRuns.interrupt(scope);
-  log.info('command', 'permission-set', { scope, access: input });
-  const effective = ACCESS_RANK[input] <= ACCESS_RANK[ceiling] ? input : ceiling;
-  const clampedNote =
-    effective !== input
-      ? `\n（注:受场景上限约束,实际生效为 \`${effective}\`）`
-      : '';
-  await reply(
-    ctx,
-    `✅ 当前 session 权限覆盖已设为 \`${input}\`。(下条消息生效)${clampedNote}`,
-  );
-}
+// ────────────── /permission — per-scope access override (SR-5, deprecated) ──────────────
+// Replaced by /role in REQ-03. handlePermissionDeprecated is the active handler;
+// this dead code is kept only as a reference for the legacy behavior.
 
 const ACCESS_RANK: Record<AccessMode, number> = {
   'read-only': 0,
