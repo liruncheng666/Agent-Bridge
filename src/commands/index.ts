@@ -22,6 +22,8 @@ import {
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  getScheduleConfig,
+  isValidHHMM,
   secretKeyForApp,
 } from '../config/schema';
 import type { ProfileAccess, ProfileConfig } from '../config/profile-schema';
@@ -172,6 +174,7 @@ const handlers: Record<string, Handler> = {
   '/invite': handleInvite,
   '/remove': handleRemove,
   '/role': handleRole,
+  '/digest': handleDigest,
 };
 
 /**
@@ -192,6 +195,7 @@ const ADMIN_COMMANDS = new Set([
   '/remove',
   '/permission',
   '/role',
+  '/digest',
 ]);
 
 function isAdminCommand(cmd: string): boolean {
@@ -2208,6 +2212,121 @@ async function savePreferencesConfig(
         ...profile.access,
         requireMentionInGroup,
       },
+    };
+    await saveRootConfig(root, ctx.controls.configPath);
+    ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;
+    ctx.controls.cfg = runtimeProfileConfig(root, ctx.controls.profile);
+  });
+}
+
+// ────────────── /digest — scheduled daily digest ──────────────
+
+async function handleDigest(args: string, ctx: CommandContext): Promise<void> {
+  const parts = args.trim().split(/\s+/).filter(Boolean);
+  const sub = parts[0]?.toLowerCase();
+
+  if (!sub || sub === 'status') {
+    const sc = getScheduleConfig(ctx.controls.cfg);
+    const status = sc.dailyDigestEnabled ? '已启用' : '已关闭';
+    const prompt = sc.dailyDigestPrompt ? `自定义 prompt: ${sc.dailyDigestPrompt.slice(0, 60)}…` : '使用内置默认 prompt';
+    await ctx.channel.rawClient.im.v1.message.reply({
+      path: { message_id: ctx.msg.messageId },
+      data: {
+        msg_type: 'text',
+        content: JSON.stringify({
+          text: `📋 日报调度状态\n状态: ${status}\n时间: ${sc.dailyDigestAt} (本地时间)\n${prompt}\n\n命令：\n  /digest now — 立即触发\n  /digest on/off — 开关\n  /digest at HH:MM — 修改时间`,
+        }),
+      },
+    });
+    return;
+  }
+
+  if (sub === 'now') {
+    await ctx.channel.rawClient.im.v1.message.reply({
+      path: { message_id: ctx.msg.messageId },
+      data: { msg_type: 'text', content: JSON.stringify({ text: '⏳ 正在生成日报…' }) },
+    });
+    const { readDayLogs } = await import('../digest/log-reader');
+    const { summarizeWithClaude } = await import('../digest/claude-summarizer');
+    const { formatDigestPost } = await import('../digest/format');
+    const { todayKey } = await import('../bot/scheduler');
+    const { resolveAppPaths } = await import('../config/app-paths');
+
+    const ownerOpenId = ctx.controls.botOwnerId;
+    if (!ownerOpenId) {
+      await replyText(ctx, '❌ 无法获取 owner open_id，请稍后重试。');
+      return;
+    }
+    const appPaths = resolveAppPaths({ profile: ctx.controls.profile });
+    const dateKey = todayKey();
+    const logData = await readDayLogs(appPaths.logsDir, dateKey, ownerOpenId);
+    if (!logData) {
+      await replyText(ctx, `📋 今日（${dateKey}）暂无运行日志。`);
+      return;
+    }
+    const sc = getScheduleConfig(ctx.controls.cfg);
+    const summary = await summarizeWithClaude(logData, sc.dailyDigestPrompt);
+    const post = formatDigestPost(logData, summary, ctx.controls.profile);
+    await ctx.channel.rawClient.im.v1.message.create({
+      params: { receive_id_type: 'open_id' },
+      data: {
+        receive_id: ownerOpenId,
+        msg_type: 'post',
+        content: JSON.stringify(post),
+      },
+    });
+    return;
+  }
+
+  if (sub === 'on' || sub === 'off') {
+    const enabled = sub === 'on';
+    await saveSchedulePreference(ctx, { dailyDigestEnabled: enabled });
+    await replyText(ctx, `✅ 日报已${enabled ? '启用' : '关闭'}。`);
+    return;
+  }
+
+  if (sub === 'at') {
+    const time = parts[1];
+    if (!isValidHHMM(time)) {
+      await replyText(ctx, '❌ 时间格式错误，请使用 HH:MM（24小时），例如：/digest at 08:30');
+      return;
+    }
+    await saveSchedulePreference(ctx, { dailyDigestAt: time });
+    await replyText(ctx, `✅ 日报触发时间已设为 ${time}（本地时间）。`);
+    return;
+  }
+
+  await replyText(ctx, '用法：/digest [now | on | off | at HH:MM]');
+}
+
+async function replyText(ctx: CommandContext, text: string): Promise<void> {
+  await ctx.channel.rawClient.im.v1.message.reply({
+    path: { message_id: ctx.msg.messageId },
+    data: { msg_type: 'text', content: JSON.stringify({ text }) },
+  });
+}
+
+async function saveSchedulePreference(
+  ctx: CommandContext,
+  patch: import('../config/schema').ScheduleConfig,
+): Promise<void> {
+  await withConfigFileLock(ctx.controls.configPath, async () => {
+    const root = await loadRootConfig(ctx.controls.configPath);
+    const currentPrefs = ctx.controls.cfg.preferences ?? {};
+    const updated = {
+      ...currentPrefs,
+      schedule: { ...(currentPrefs.schedule ?? {}), ...patch },
+    };
+    if (!root) {
+      ctx.controls.cfg.preferences = updated;
+      await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
+      return;
+    }
+    const profile = root.profiles[ctx.controls.profile];
+    if (!profile) throw new Error(`profile not found: ${ctx.controls.profile}`);
+    root.profiles[ctx.controls.profile] = {
+      ...profile,
+      preferences: { ...profile.preferences, schedule: updated.schedule },
     };
     await saveRootConfig(root, ctx.controls.configPath);
     ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;

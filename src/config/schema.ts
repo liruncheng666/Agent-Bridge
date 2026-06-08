@@ -137,6 +137,32 @@ export interface AppPreferences {
    * Range 100-30000; out-of-range values fall back to default.
    */
   agentStopGraceMs?: number;
+  /** Scheduled task configuration (daily digest, etc.). */
+  schedule?: ScheduleConfig;
+}
+
+/**
+ * Configuration for scheduled tasks (e.g. daily digest).
+ * All fields are optional — sensible defaults apply when absent.
+ */
+export interface ScheduleConfig {
+  /**
+   * Local time (HH:MM, 24-hour) at which the daily digest fires.
+   * Default "08:00". Example: "09:30".
+   */
+  dailyDigestAt?: string;
+  /**
+   * Whether the daily digest is enabled. Default true.
+   * Toggle via `/digest on` / `/digest off`.
+   */
+  dailyDigestEnabled?: boolean;
+  /**
+   * Custom analysis prompt sent to Claude when generating the digest.
+   * When absent the built-in default prompt is used (extract product bugs
+   * and owner feedback/needs from the log). Set via `/digest prompt <text>`,
+   * reset via `/digest prompt reset`.
+   */
+  dailyDigestPrompt?: string;
 }
 
 /**
@@ -251,4 +277,20 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
   const clamped = Math.min(Math.max(Math.floor(raw), 1), 120);
   return clamped * 60_000;
+}
+
+/** Resolve schedule config with defaults applied. */
+export function getScheduleConfig(cfg: AppConfig): Required<Omit<ScheduleConfig, 'dailyDigestPrompt'>> & Pick<ScheduleConfig, 'dailyDigestPrompt'> {
+  const s = cfg.preferences?.schedule ?? {};
+  return {
+    dailyDigestAt: isValidHHMM(s.dailyDigestAt) ? s.dailyDigestAt! : '08:00',
+    dailyDigestEnabled: s.dailyDigestEnabled !== false,
+    dailyDigestPrompt: s.dailyDigestPrompt,
+  };
+}
+
+/** Returns true if s is a valid "HH:MM" 24-hour string. */
+export function isValidHHMM(s: string | undefined): boolean {
+  if (!s) return false;
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
 }

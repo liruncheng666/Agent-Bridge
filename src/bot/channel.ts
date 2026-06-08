@@ -57,6 +57,8 @@ import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
+import { startScheduler } from './scheduler';
+import { createDailyDigestTask } from '../digest/daily-digest-task';
 import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
@@ -204,7 +206,7 @@ export interface StartChannelDeps {
   controls: Controls;
   appPaths?: Pick<
     AppPaths,
-    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'defaultWorkspaceDir'
+    'secretsFile' | 'keystoreSaltFile' | 'mediaDir' | 'defaultWorkspaceDir' | 'logsDir'
   >;
 }
 
@@ -467,6 +469,22 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     forceReconnect: () => controls.restart(),
   });
 
+  const logsDir = deps.appPaths?.logsDir;
+  const scheduler = startScheduler({
+    tasks: [createDailyDigestTask()],
+    getContext: () => {
+      const ownerOpenId = controls.botOwnerId;
+      if (!ownerOpenId || !logsDir) return undefined;
+      return {
+        rawClient: channel.rawClient,
+        ownerOpenId,
+        logsDir,
+        profile: controls.profile,
+        cfg: controls.cfg,
+      };
+    },
+  });
+
   return {
     channel,
     disconnect: async () => {
@@ -474,6 +492,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();
+      scheduler.stop();
       pending.cancelAll();
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
         channel.disconnect(),
