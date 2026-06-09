@@ -26,6 +26,8 @@ A lightweight bot that bridges Feishu / Lark messenger with your local Claude Co
 
 ## Install
 
+> **Windows users**: run the install command from an elevated PowerShell or Windows Terminal (right-click → "Run as administrator"). The standard Command Prompt may fail due to permission restrictions. The QR code also requires Windows Terminal or VS Code's terminal to render correctly — old cmd.exe shows garbled output.
+
 ```bash
 npm i -g agent-bridge
 # or
@@ -38,13 +40,15 @@ pnpm add -g agent-bridge
 agent-bridge run
 ```
 
-The first run opens a QR-code wizard:
+The first run opens a QR-code wizard — the whole process takes about a minute:
 
-1. A QR code renders in your terminal.
-2. Scan it with the Feishu / Lark app.
-3. Pick or create a PersonalAgent app.
-4. If prompted, choose which agent to initialize.
-5. Config is written to `~/.agent-bridge/config.json`.
+1. A QR code renders in your terminal. If it looks garbled on Windows, switch to Windows Terminal or VS Code's integrated terminal.
+2. Scan the QR code with the Feishu / Lark app. Feishu opens a "Create personal app" page — just tap **Create**. No developer account or form-filling needed.
+3. After scanning, the terminal prints `✓ 应用创建成功` (app created).
+4. The bridge automatically configures lark-cli. If the install times out on a slow network, a manual install hint is printed — all other features still work.
+5. The terminal prints a message telling you to search for your bot in Feishu and start a DM.
+
+**Finding your bot**: open Feishu → type the app name in the top search bar (the default name is usually your name + "的个人助手") → open the DM → send a message to test.
 
 You do not need to choose a project directory up front. The bridge creates a profile-managed default working directory; after startup, send `/cd <path>` in Feishu / Lark to switch to a real project.
 

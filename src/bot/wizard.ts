@@ -30,7 +30,7 @@ export async function runRegistrationWizard(): Promise<AppConfig> {
   console.log(`  App ID:  ${result.client_id}`);
   console.log(`  Tenant:  ${tenant}`);
   if (operatorOpenId) {
-    console.log(`  Creator: ${operatorOpenId} (Lark 应用 owner，自动豁免访问控制)`);
+    console.log(`  Creator: ${operatorOpenId} (应用 owner，自动豁免所有访问控制)`);
   } else {
     console.log('  ⚠️ 未拿到扫码用户的 open_id；启动后会通过应用 owner API 解析创建者。');
   }
@@ -41,13 +41,6 @@ export async function runRegistrationWizard(): Promise<AppConfig> {
   // unconditional bypass on the very first message — no config edit needed.
   // `allowedUsers` / `allowedChats` / `admins` stay empty (= nobody outside
   // the creator) until the operator tightens via `/config`.
-  if (operatorOpenId) {
-    console.log(`  Creator: ${operatorOpenId} (Lark 应用 owner，自动豁免所有访问控制)`);
-  } else {
-    console.log(
-      '  ⚠️ 未拿到扫码用户的 open_id；首次启动时 bridge 会自行调 application/v6 API 解析当前 owner。',
-    );
-  }
 
   const cfg: AppConfig = {
     accounts: {
@@ -59,6 +52,8 @@ export async function runRegistrationWizard(): Promise<AppConfig> {
     },
   };
 
+  console.log('');
+  console.log('bridge 启动后，打开飞书，在搜索框搜索你刚才创建的应用名称，打开私聊即可开始使用。');
   console.log('');
   return cfg;
 }
