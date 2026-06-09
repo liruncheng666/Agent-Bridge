@@ -27,6 +27,8 @@ export interface SchedulerDeps {
   tasks: ScheduledTask[];
   /** Returns undefined when ownerOpenId is not yet resolved (pre-startup). */
   getContext: () => TaskContext | undefined;
+  /** Called once the first time getContext() returns a valid context. */
+  onFirstContext?: (ctx: TaskContext) => void;
 }
 
 export interface SchedulerHandle {
@@ -41,6 +43,7 @@ const TICK_INTERVAL_MS = 60_000;
 export function startScheduler(deps: SchedulerDeps): SchedulerHandle {
   const { tasks, getContext } = deps;
   let stopped = false;
+  let firstContextFired = false;
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
@@ -51,6 +54,19 @@ export function startScheduler(deps: SchedulerDeps): SchedulerHandle {
     for (const task of tasks) {
       const ctx = getContext();
       if (!ctx) continue;
+
+      // Fire onFirstContext once — used for startup catch-up jobs.
+      if (!firstContextFired) {
+        firstContextFired = true;
+        if (deps.onFirstContext) {
+          try {
+            deps.onFirstContext(ctx);
+          } catch (err) {
+            log.fail('scheduler', err, { step: 'onFirstContext' });
+          }
+        }
+      }
+
       if (!task.isEnabled(ctx.cfg)) continue;
       if (task.getDailyAt(ctx.cfg) !== hhmm) continue;
       if (task.lastFiredDate === dateKey) continue;

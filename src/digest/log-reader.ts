@@ -73,12 +73,17 @@ export async function readDayLogs(
       if (sender === ownerOpenId && preview && preview.length > 3 && !preview.startsWith('/')) {
         ownerPreviews.push(preview.slice(0, 200));
       }
-    } else if (level === 'error') {
+    } else if (isErrorEntry(level, phase, event, entry)) {
+      const errMsg =
+        (entry['err'] as string | undefined) ??
+        (entry['message'] as string | undefined) ??
+        (entry['error'] as string | undefined) ??
+        '';
       errors.push({
         ts: (entry['ts'] as string | undefined) ?? '',
         phase: phase ?? '',
         event: event ?? '',
-        err: (entry['err'] as string | undefined) ?? '',
+        err: errMsg,
       });
     } else if (phase === 'command') {
       commandCount++;
@@ -94,4 +99,42 @@ export async function readDayLogs(
     errors,
     commandCount,
   };
+}
+
+/**
+ * Determine whether a log entry should be collected as an error for the digest.
+ * Covers two cases:
+ *   1. level === 'error'  (explicit error level)
+ *   2. Known high-signal error events that the Lark SDK logs at info level
+ *      but represent real failures (ws-stuck, chats-fetch-failed, agent.fail,
+ *      command.fail, digest failures, run failures with non-normal result).
+ */
+function isErrorEntry(
+  level: string | undefined,
+  phase: string | undefined,
+  event: string | undefined,
+  entry: Record<string, unknown>,
+): boolean {
+  if (level === 'error') return true;
+
+  // High-signal error events logged at info level
+  const HIGH_SIGNAL_EVENTS: ReadonlySet<string> = new Set([
+    'ws-stuck',
+    'chats-fetch-failed',
+    'agent-fail',
+    'agent.fail',
+    'command.fail',
+    'summarizer-fail',
+    'summarizer-no-env',
+    'summarizer-wrong-classification',
+  ]);
+  if (event && HIGH_SIGNAL_EVENTS.has(event)) return true;
+
+  // run/completed with non-normal result
+  if (phase === 'run' && event === 'completed') {
+    const result = entry['result'] as string | undefined;
+    if (result && result !== 'normal') return true;
+  }
+
+  return false;
 }

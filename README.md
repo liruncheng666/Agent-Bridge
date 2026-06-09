@@ -1,5 +1,7 @@
 # Agent-bridge
 
+![CI](https://github.com/liruncheng666/Agent-Bridge/actions/workflows/ci.yml/badge.svg)
+
 A lightweight bot that bridges Feishu / Lark messenger with your local Claude Code or Codex CLI. Run one command, scan a QR code to bind a PersonalAgent app, and talk to your local coding agent from chat.
 
 [中文 README](./README.zh.md)
@@ -352,6 +354,10 @@ pnpm build
 `pnpm test` includes unit, integration, and process-level adapter tests. CI runs on macOS, Ubuntu, and Windows with `pnpm install --frozen-lockfile`, `pnpm test`, `pnpm typecheck`, and `pnpm build`.
 
 > Modifying the code, opening a PR, releasing, or syncing updates across the team? See [CONTRIBUTING.md](./CONTRIBUTING.md) for the development and collaboration workflow.
+
+## Daily digest
+
+The `/digest` command and the automatic daily digest require the local `claude` CLI to be installed and logged in (Claude Code). The bridge calls it to analyze run logs and sends the summary to your Feishu / Lark DM. If the CLI is not logged in, the digest silently degrades — all other features are unaffected.
 
 ## Optional telemetry
 

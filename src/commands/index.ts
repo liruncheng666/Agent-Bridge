@@ -74,6 +74,10 @@ import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import { fetchKnownChats, fetchMemberNames, type KnownChat } from '../bot/lark-info';
+import { todayKey } from '../bot/scheduler';
+import { readDayLogs } from '../digest/log-reader';
+import { summarizeWithClaude } from '../digest/claude-summarizer';
+import { formatDigestPost, type PostContent } from '../digest/format';
 
 export interface Controls {
   profile: string;
@@ -2229,81 +2233,57 @@ async function handleDigest(args: string, ctx: CommandContext): Promise<void> {
     const sc = getScheduleConfig(ctx.controls.cfg);
     const status = sc.dailyDigestEnabled ? '已启用' : '已关闭';
     const prompt = sc.dailyDigestPrompt ? `自定义 prompt: ${sc.dailyDigestPrompt.slice(0, 60)}…` : '使用内置默认 prompt';
-    await ctx.channel.rawClient.im.v1.message.reply({
-      path: { message_id: ctx.msg.messageId },
-      data: {
-        msg_type: 'text',
-        content: JSON.stringify({
-          text: `📋 日报调度状态\n状态: ${status}\n时间: ${sc.dailyDigestAt} (本地时间)\n${prompt}\n\n命令：\n  /digest now — 立即触发\n  /digest on/off — 开关\n  /digest at HH:MM — 修改时间`,
-        }),
-      },
-    });
+    await reply(ctx, `**日报调度状态**\n状态: ${status}\n时间: ${sc.dailyDigestAt} (本地时间)\n${prompt}\n\n命令：\n  /digest now — 立即触发\n  /digest on/off — 开关\n  /digest at HH:MM — 修改时间`);
     return;
   }
 
   if (sub === 'now') {
-    await ctx.channel.rawClient.im.v1.message.reply({
-      path: { message_id: ctx.msg.messageId },
-      data: { msg_type: 'text', content: JSON.stringify({ text: '⏳ 正在生成日报…' }) },
-    });
-    const { readDayLogs } = await import('../digest/log-reader');
-    const { summarizeWithClaude } = await import('../digest/claude-summarizer');
-    const { formatDigestPost } = await import('../digest/format');
-    const { todayKey } = await import('../bot/scheduler');
-    const { resolveAppPaths } = await import('../config/app-paths');
+    await reply(ctx, '⏳ 正在生成日报…');
 
     const ownerOpenId = ctx.controls.botOwnerId;
     if (!ownerOpenId) {
-      await replyText(ctx, '❌ 无法获取 owner open_id，请稍后重试。');
+      await reply(ctx, '❌ 无法获取 owner open_id，请稍后重试。');
       return;
     }
     const appPaths = resolveAppPaths({ profile: ctx.controls.profile });
     const dateKey = todayKey();
     const logData = await readDayLogs(appPaths.logsDir, dateKey, ownerOpenId);
     if (!logData) {
-      await replyText(ctx, `📋 今日（${dateKey}）暂无运行日志。`);
+      await reply(ctx, `📋 今日（${dateKey}）暂无运行日志。`);
       return;
     }
     const sc = getScheduleConfig(ctx.controls.cfg);
-    const summary = await summarizeWithClaude(logData, sc.dailyDigestPrompt);
+    const summary = await summarizeWithClaude(logData, sc.dailyDigestPrompt, appPaths.logsDir);
     const post = formatDigestPost(logData, summary, ctx.controls.profile);
-    await ctx.channel.rawClient.im.v1.message.create({
-      params: { receive_id_type: 'open_id' },
-      data: {
-        receive_id: ownerOpenId,
-        msg_type: 'post',
-        content: JSON.stringify(post),
-      },
-    });
+    await ctx.channel.send(ctx.msg.chatId, { markdown: digestPostToMarkdown(post) }, { replyTo: ctx.msg.messageId });
     return;
   }
 
   if (sub === 'on' || sub === 'off') {
     const enabled = sub === 'on';
     await saveSchedulePreference(ctx, { dailyDigestEnabled: enabled });
-    await replyText(ctx, `✅ 日报已${enabled ? '启用' : '关闭'}。`);
+    await reply(ctx, `✅ 日报已${enabled ? '启用' : '关闭'}。`);
     return;
   }
 
   if (sub === 'at') {
     const time = parts[1];
     if (!isValidHHMM(time)) {
-      await replyText(ctx, '❌ 时间格式错误，请使用 HH:MM（24小时），例如：/digest at 08:30');
+      await reply(ctx, '❌ 时间格式错误，请使用 HH:MM（24小时），例如：/digest at 08:30');
       return;
     }
     await saveSchedulePreference(ctx, { dailyDigestAt: time });
-    await replyText(ctx, `✅ 日报触发时间已设为 ${time}（本地时间）。`);
+    await reply(ctx, `✅ 日报触发时间已设为 ${time}（本地时间）。`);
     return;
   }
 
-  await replyText(ctx, '用法：/digest [now | on | off | at HH:MM]');
+  await reply(ctx, '用法：/digest [now | on | off | at HH:MM]');
 }
 
-async function replyText(ctx: CommandContext, text: string): Promise<void> {
-  await ctx.channel.rawClient.im.v1.message.reply({
-    path: { message_id: ctx.msg.messageId },
-    data: { msg_type: 'text', content: JSON.stringify({ text }) },
-  });
+function digestPostToMarkdown(post: PostContent): string {
+  const { title, content } = post.zh_cn;
+  const body = content.map((line) => line.map((seg) => seg.text).join('')).join('\n');
+  return `**${title}**\n\n${body}`;
 }
 
 async function saveSchedulePreference(

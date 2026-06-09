@@ -1,5 +1,7 @@
 # Agent-bridge
 
+![CI](https://github.com/liruncheng666/Agent-Bridge/actions/workflows/ci.yml/badge.svg)
+
 把飞书 / Lark 消息和本地 Claude Code 或 Codex CLI 打通的轻量 bot。用一条命令启动，扫码绑定 PersonalAgent 应用，然后在飞书里和本机编程助手对话，让它读图、处理文件、改代码。
 
 [English README](./README.md)
@@ -352,6 +354,10 @@ pnpm build
 `pnpm test` 包含 unit、integration 和 process-level adapter 测试。CI 在 macOS、Ubuntu、Windows 上执行 `pnpm install --frozen-lockfile`、`pnpm test`、`pnpm typecheck` 和 `pnpm build`。
 
 > 要修改代码、提 PR、发布版本或在团队间同步更新？开发与协作流程见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+
+## 每日摘要（Daily Digest）
+
+`/digest` 命令和每日自动摘要需要本机 `claude` CLI 已登录（Claude Code）。bridge 会调用它对运行日志做 AI 分析后发送到你的飞书私聊。未登录时摘要功能会静默降级——其他功能不受影响。
 
 ## 可选：遥测（Telemetry）
 

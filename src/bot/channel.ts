@@ -58,7 +58,7 @@ import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { startScheduler } from './scheduler';
-import { createDailyDigestTask } from '../digest/daily-digest-task';
+import { createDailyDigestTask, catchUpMissedDigests } from '../digest/daily-digest-task';
 import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
@@ -482,6 +482,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         profile: controls.profile,
         cfg: controls.cfg,
       };
+    },
+    onFirstContext: (ctx) => {
+      // Catch up any missed digests (max 3 days) on first valid context.
+      void catchUpMissedDigests(ctx).catch((err) =>
+        log.fail('digest', err, { step: 'catchup-startup' }),
+      );
     },
   });
 

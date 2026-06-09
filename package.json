@@ -6,12 +6,12 @@
   "packageManager": "pnpm@10.33.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-org/agent-bridge.git"
+    "url": "git+https://github.com/liruncheng666/Agent-Bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/your-org/agent-bridge/issues"
+    "url": "https://github.com/liruncheng666/Agent-Bridge/issues"
   },
-  "homepage": "https://github.com/your-org/agent-bridge#readme",
+  "homepage": "https://github.com/liruncheng666/Agent-Bridge#readme",
   "bin": {
     "agent-bridge": "./bin/agent-bridge.mjs"
   },
