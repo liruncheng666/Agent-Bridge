@@ -13,7 +13,7 @@
   },
   "homepage": "https://github.com/liruncheng666/Agent-Bridge#readme",
   "bin": {
-    "agent-bridge": "./bin/agent-bridge.mjs"
+    "agent-bridge": "./bin/agent-bridge"
   },
   "exports": {
     ".": {
