@@ -160,7 +160,13 @@ function toStringArray(v: unknown): string[] {
 }
 
 function dedup(arr: string[]): string[] {
-  return [...new Set(arr)];
+  const seen = new Set<string>();
+  return arr.filter((s) => {
+    const key = s.toLowerCase().trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** Returns true when two strings share enough common words to be considered duplicates. */

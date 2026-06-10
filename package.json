@@ -1,5 +1,5 @@
 {
-  "name": "agent-bridge",
+  "name": "lark-ai-bridge",
   "version": "0.2.1",
   "description": "Bridge Feishu/Lark messenger with local CLI coding agents",
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "homepage": "https://github.com/liruncheng666/Agent-Bridge#readme",
   "bin": {
-    "agent-bridge": "./bin/agent-bridge.mjs"
+    "lark-ai-bridge": "./bin/lark-ai-bridge.mjs"
   },
   "exports": {
     ".": {
@@ -26,8 +26,7 @@
     "bin",
     "README.md",
     "README.zh.md",
-    "LICENSE",
-    "NOTICE"
+    "LICENSE"
   ],
   "scripts": {
     "dev": "tsup --watch",

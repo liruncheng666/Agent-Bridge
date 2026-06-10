@@ -143,12 +143,18 @@ async function sendMessage(
   ctx: TaskContext,
   postContent: { zh_cn: { title: string; content: unknown } },
 ): Promise<void> {
-  await ctx.rawClient.im.v1.message.create({
-    params: { receive_id_type: 'open_id' },
-    data: {
-      receive_id: ctx.ownerOpenId,
-      msg_type: 'post',
-      content: JSON.stringify(postContent),
-    },
-  });
+  try {
+    await ctx.rawClient.im.v1.message.create({
+      params: { receive_id_type: 'open_id' },
+      data: {
+        receive_id: ctx.ownerOpenId,
+        msg_type: 'post',
+        content: JSON.stringify(postContent),
+      },
+    });
+    log.info('digest', 'send-ok', { title: postContent.zh_cn.title });
+  } catch (err) {
+    log.fail('digest', err, { step: 'send-message', title: postContent.zh_cn.title });
+    throw err;
+  }
 }
