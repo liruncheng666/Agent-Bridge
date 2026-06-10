@@ -13,7 +13,7 @@
   },
   "homepage": "https://github.com/liruncheng666/Agent-Bridge#readme",
   "bin": {
-    "lark-ai-bridge": "./bin/lark-ai-bridge.mjs"
+    "agent-bridge": "./bin/agent-bridge.mjs"
   },
   "exports": {
     ".": {
