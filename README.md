@@ -273,6 +273,8 @@ Only you and admins can run these commands. You can never lock yourself out — 
 - **Everyone in a group gets read-only** → `/config` in the group → set policy to `open-participant`.
 - **Co-admin** → `/invite admin @them`.
 
+Cloud-doc comments are document-scoped: anyone who can comment and mention the bot in a supported document can trigger a reply — no separate access list needed.
+
 ## Cloud-doc comments
 
 Cloud-doc comments do not need a separate workspace binding or document allowlist. In supported document comments, mention the bot and the bridge replies in the same thread. Comment runs reuse the document session key and fall back to the user home directory when no document cwd was previously recorded.

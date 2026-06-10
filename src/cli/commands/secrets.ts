@@ -86,7 +86,7 @@ export async function runSecretsSet(
   opts: SecretProfileOptions = {},
 ): Promise<void> {
   if (!appId) {
-    console.error('用法: agent-bridge secrets set --app-id <id>');
+    console.error('用法: lark-ai-bridge secrets set --app-id <id>');
     process.exit(1);
   }
   const plaintext = await promptPassword(`输入 ${appId} 的 App Secret: `);
@@ -116,7 +116,7 @@ export async function runSecretsRemove(
   opts: SecretProfileOptions = {},
 ): Promise<void> {
   if (!appId) {
-    console.error('用法: agent-bridge secrets remove --app-id <id>');
+    console.error('用法: lark-ai-bridge secrets remove --app-id <id>');
     process.exit(1);
   }
   const id = secretKeyForApp(appId);

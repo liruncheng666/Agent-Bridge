@@ -28,7 +28,7 @@ import { runStart } from './commands/start';
 const program = new Command();
 
 program
-  .name('agent-bridge')
+  .name('lark-ai-bridge')
   .description('Bridge Feishu/Lark messenger with local CLI coding agents')
   .version(pkg.version, '-v, --version');
 

@@ -220,7 +220,7 @@ function printBindFailedWarning(result: RunResult, appPaths?: AppPaths): void {
 
 function restartInstruction(profile?: string): string {
   const suffix = profile ? ` --profile ${profile}` : '';
-  return `Restart the current profile: agent-bridge restart${suffix}; for foreground runs, press Ctrl+C and rerun agent-bridge run${suffix}.`;
+  return `Restart the current profile: lark-ai-bridge restart${suffix}; for foreground runs, press Ctrl+C and rerun lark-ai-bridge run${suffix}.`;
 }
 
 function shouldUseLegacyLarkChannelSourceOverlay(output: string, appPaths: AppPaths): boolean {
