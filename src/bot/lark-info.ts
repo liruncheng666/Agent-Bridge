@@ -54,6 +54,12 @@ export async function fetchKnownChats(channel: LarkChannel): Promise<KnownChat[]
   }
 }
 
+export interface FetchMemberNamesResult {
+  nameMap: Map<string, string>;
+  /** True when the API call was rejected due to missing im:chat.members:read scope. */
+  permissionDenied: boolean;
+}
+
 /**
  * Fetch display names for a list of open_ids by looking them up in the
  * given chat's member list. Returns a map of openId → displayName.
@@ -64,9 +70,9 @@ export async function fetchMemberNames(
   channel: LarkChannel,
   chatId: string,
   openIds: readonly string[],
-): Promise<Map<string, string>> {
+): Promise<FetchMemberNamesResult> {
   const nameMap = new Map<string, string>();
-  if (openIds.length === 0) return nameMap;
+  if (openIds.length === 0) return { nameMap, permissionDenied: false };
 
   try {
     let pageToken: string | undefined;
@@ -97,10 +103,19 @@ export async function fetchMemberNames(
       pageToken = data?.has_more ? data.page_token : undefined;
     } while (pageToken);
   } catch (err) {
+    const denied = isPermissionError(err);
     log.warn('lark-info', 'members-fetch-failed', {
       chatId,
+      permissionDenied: denied,
       err: err instanceof Error ? err.message : String(err),
     });
+    // Fall through to fill missing IDs with short fallback below.
+    if (denied) {
+      for (const id of openIds) {
+        nameMap.set(id, `...${id.slice(-6)}`);
+      }
+      return { nameMap, permissionDenied: true };
+    }
   }
 
   // For any openId not found in the member list, fall back to short ID.
@@ -109,5 +124,17 @@ export async function fetchMemberNames(
       nameMap.set(id, `...${id.slice(-6)}`);
     }
   }
-  return nameMap;
+  return { nameMap, permissionDenied: false };
+}
+
+/** Returns true when a Feishu API error indicates missing scope / permission denied. */
+function isPermissionError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  // HTTP 403
+  const status = (err as { response?: { status?: number } })?.response?.status;
+  if (status === 403) return true;
+  // Feishu business error codes for permission denied
+  const code = (err as { response?: { data?: { code?: number } } })?.response?.data?.code;
+  // 99991663 = no permission; 99991672 = missing scope
+  return code === 99991663 || code === 99991672;
 }

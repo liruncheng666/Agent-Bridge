@@ -57,8 +57,10 @@ export async function summarizeWithClaude(
       return { ...fallback };
     }
     return {
-      bugs: toStringArray(parsed['bugs']),
-      userNeeds: toStringArray(parsed['userNeeds']),
+      bugs: dedup(toStringArray(parsed['bugs'])),
+      userNeeds: dedup(toStringArray(parsed['userNeeds']).filter(
+        (n) => !toStringArray(parsed['bugs']).some((b) => similarText(b, n)),
+      )),
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -155,4 +157,20 @@ function extractJson(text: string): Record<string, unknown> | null {
 function toStringArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   return v.filter((x) => typeof x === 'string') as string[];
+}
+
+function dedup(arr: string[]): string[] {
+  return [...new Set(arr)];
+}
+
+/** Returns true when two strings share enough common words to be considered duplicates. */
+function similarText(a: string, b: string): boolean {
+  const wordsOf = (s: string): Set<string> =>
+    new Set(s.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
+  const wa = wordsOf(a);
+  const wb = wordsOf(b);
+  if (wa.size === 0 || wb.size === 0) return false;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / Math.min(wa.size, wb.size) >= 0.6;
 }

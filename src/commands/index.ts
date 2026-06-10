@@ -78,6 +78,7 @@ import { todayKey } from '../bot/scheduler';
 import { readDayLogs } from '../digest/log-reader';
 import { summarizeWithClaude } from '../digest/claude-summarizer';
 import { formatDigestPost, type PostContent } from '../digest/format';
+import { scanActiveSessions } from '../tasks/session-scanner';
 
 export interface Controls {
   profile: string;
@@ -179,6 +180,7 @@ const handlers: Record<string, Handler> = {
   '/remove': handleRemove,
   '/role': handleRole,
   '/digest': handleDigest,
+  '/tasks': handleTasks,
 };
 
 /**
@@ -1894,7 +1896,7 @@ async function replyGroupRoleList(
 
   // Fetch display names from the group's member list.
   const allIds = [...new Set([...collaborators, ...participants])];
-  const nameMap = await fetchMemberNames(ctx.channel, chatId, allIds);
+  const { nameMap, permissionDenied } = await fetchMemberNames(ctx.channel, chatId, allIds);
 
   const formatList = (ids: string[]): string => {
     if (ids.length === 0) return '_（暂无）_';
@@ -1902,13 +1904,17 @@ async function replyGroupRoleList(
   };
 
   const title = chatName ? `**${chatName}** 群角色配置` : '**当前群角色配置**';
+  const permissionNote = permissionDenied
+    ? '\n\n⚠️ 无法读取群成员姓名（缺少 `im:chat.members:read` 权限），请在飞书开放平台添加该权限并重新发布应用。'
+    : '';
   await reply(
     ctx,
     `${title}\n\n` +
     `**讨论人**（可读写 workspace）：${formatList(collaborators)}\n\n` +
     `**参与人**（仅读 workspace）：${formatList(participants)}\n\n` +
-    `**群策略**：${policyLabel}\n\n` +
-    `_用 \`/role @某人 讨论人|参与人|移除\` 管理角色_`,
+    `**群策略**：${policyLabel}` +
+    permissionNote +
+    `\n\n_用 \`/role @某人 讨论人|参与人|移除\` 管理角色_`,
   );
 }
 
@@ -2312,4 +2318,59 @@ async function saveSchedulePreference(
     ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;
     ctx.controls.cfg = runtimeProfileConfig(root, ctx.controls.profile);
   });
+}
+
+// ────────────── /tasks — local terminal session status ──────────────
+
+async function handleTasks(args: string, ctx: CommandContext): Promise<void> {
+  const showAll = args.trim().toLowerCase() === 'all';
+  const windowMin = 60;
+  const staleCutoffMin = 30;
+
+  const sessions = await scanActiveSessions(showAll ? 24 * 60 : windowMin);
+
+  const visible = showAll
+    ? sessions
+    : sessions.filter((s) => !(s.terminal === 'done' && s.minutesAgo > staleCutoffMin));
+
+  if (visible.length === 0) {
+    await reply(ctx, `最近${windowMin}分钟无活跃终端任务。`);
+    return;
+  }
+
+  const lines: string[] = [];
+  for (const s of visible) {
+    const icon = statusIcon(s);
+    const label = statusLabel(s);
+    const ago = s.minutesAgo === 0 ? '刚刚' : `${s.minutesAgo}分钟前`;
+    const msg = s.lastMessage ? `  "${s.lastMessage.slice(0, 60)}${s.lastMessage.length > 60 ? '…' : ''}"` : '';
+    lines.push(`${icon} **${s.projectName}**  ${label}  ${ago}${msg ? '\n' + msg : ''}`);
+  }
+
+  const summary = `📋 本地终端任务（最近${showAll ? '全部' : windowMin + '分钟'}）\n\n${lines.join('\n\n')}`;
+  await reply(ctx, summary);
+}
+
+function statusIcon(s: import('../tasks/session-scanner').SessionSummary): string {
+  if (s.waitingForUser) return '⏳';
+  switch (s.terminal) {
+    case 'running': return '🔄';
+    case 'idle_timeout': return '⏰';
+    case 'done': return '✅';
+    case 'error': return '❌';
+    case 'interrupted': return '⛔';
+    default: return '❓';
+  }
+}
+
+function statusLabel(s: import('../tasks/session-scanner').SessionSummary): string {
+  if (s.waitingForUser) return '等你回复';
+  switch (s.terminal) {
+    case 'running': return '执行中';
+    case 'idle_timeout': return '可能卡住';
+    case 'done': return '已完成';
+    case 'error': return '出错';
+    case 'interrupted': return '已中断';
+    default: return '未知';
+  }
 }
