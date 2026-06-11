@@ -6,24 +6,31 @@ import type { DigestLogData } from './log-reader';
 export interface SummaryResult {
   bugs: string[];
   userNeeds: string[];
+  /**
+   * Optional pending action items. Populated when the user's custom prompt
+   * instructs Claude to output a `pendingItems` field. Not present in the
+   * default prompt output — callers must handle undefined gracefully.
+   */
+  pendingItems?: string[];
   /** Set when Claude call failed — raw fallback text for display. */
   raw?: string;
 }
 
-const DEFAULT_PROMPT = `你是一个产品助手，负责分析 agent-bridge 产品的运行日志，生成每日简报。
+const DEFAULT_PROMPT = `你是一个 bot 运行助手，负责根据昨日运行日志生成简明的每日摘要推送。
 
 以下是昨天的日志摘要（JSON 格式）：
 
 {LOG_DATA}
 
-请从中提取两类信息：
-1. bugs：代码/功能层面的缺陷——系统抛出的异常、功能不按预期工作、现有功能故障（来自 errors 字段和 ownerPreviews 中描述"某功能坏了/不行/报错/失败"的语句；忽略网络波动类的 ws/keepalive 错误）
-2. userNeeds：用户主动提出的新功能需求、改进方向、体验优化建议（来自 ownerPreviews，只保留"我希望/建议/能否支持/想要"类语句；不包括现有功能的故障描述，那属于 bugs）
+请完成以下两项任务：
 
-严格按以下 JSON 格式输出，不要任何额外文字，不要解释，不要拒绝，直接输出 JSON：
+1. bugs：列出昨日出现的异常或功能故障（来自 errors 字段）。忽略网络抖动、ws 重连等瞬态错误，只保留影响正常使用的问题。
+2. userNeeds：从 ownerPreviews（bot owner 的对话消息）中提取明确的待办事项和行动项。只保留具体可执行的内容（如"需要做 X""记得处理 Y"），过滤掉普通对话和已完成事项。
+
+严格按以下 JSON 格式输出，不要任何额外文字：
 {"bugs":["..."],"userNeeds":["..."]}
 
-如果没有相关内容则输出空数组。即使数据为空或格式奇特，也必须输出合法 JSON，不得输出其他任何内容。`;
+如果没有相关内容则输出空数组。必须输出合法 JSON，不得输出其他任何内容。`;
 
 const TIMEOUT_MS = 30_000;
 
@@ -61,6 +68,9 @@ export async function summarizeWithClaude(
       userNeeds: dedup(toStringArray(parsed['userNeeds']).filter(
         (n) => !toStringArray(parsed['bugs']).some((b) => similarText(b, n)),
       )),
+      ...(parsed['pendingItems'] !== undefined
+        ? { pendingItems: dedup(toStringArray(parsed['pendingItems'])) }
+        : {}),
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -169,8 +179,32 @@ function dedup(arr: string[]): string[] {
   });
 }
 
-/** Returns true when two strings share enough common words to be considered duplicates. */
+/** Returns true when two strings share enough common words/characters to be considered duplicates. */
 function similarText(a: string, b: string): boolean {
+  const hasCJK = (s: string): boolean => /[一-鿿]/.test(s);
+
+  if (hasCJK(a) || hasCJK(b)) {
+    const normalize = (s: string): string => s.toLowerCase().replace(/\s+/g, '');
+    const na = normalize(a);
+    const nb = normalize(b);
+    if (na.length === 0 || nb.length === 0) return false;
+    // Substring containment = obvious duplicate
+    if (na.includes(nb) || nb.includes(na)) return true;
+    // Character trigram Jaccard similarity
+    const trigrams = (s: string): Set<string> => {
+      const t = new Set<string>();
+      for (let i = 0; i <= s.length - 3; i++) t.add(s.slice(i, i + 3));
+      return t;
+    };
+    const ta = trigrams(na);
+    const tb = trigrams(nb);
+    if (ta.size === 0 || tb.size === 0) return false;
+    let shared = 0;
+    for (const t of ta) if (tb.has(t)) shared++;
+    return shared / Math.min(ta.size, tb.size) >= 0.5;
+  }
+
+  // Non-CJK: word-level overlap
   const wordsOf = (s: string): Set<string> =>
     new Set(s.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
   const wa = wordsOf(a);

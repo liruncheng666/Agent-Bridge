@@ -137,33 +137,75 @@ export interface AppPreferences {
    * Range 100-30000; out-of-range values fall back to default.
    */
   agentStopGraceMs?: number;
+  /**
+   * Whether the bot sends a welcome message when it is added to a new group
+   * by the owner. Default true. Set false to suppress the welcome message
+   * (useful when the bot is batch-added to many groups).
+   */
+  autoWelcome?: boolean;
   /** Scheduled task configuration (daily digest, etc.). */
   schedule?: ScheduleConfig;
 }
 
 /**
- * Configuration for scheduled tasks (e.g. daily digest).
+ * A single scheduled notification entry.
+ * Each notification fires once per day at its configured time.
+ */
+export interface NotificationConfig {
+  /** Unique identifier — used for sent-record isolation and command addressing. */
+  id: string;
+  /** Display name shown in /config and /digest list. */
+  name: string;
+  /**
+   * Notification type:
+   *   - `basic`: push raw log statistics only (no Claude call required)
+   *   - `ai`: call Claude to analyse the log and generate a summary
+   */
+  type: 'basic' | 'ai';
+  /** Local time (HH:MM, 24-hour) at which this notification fires. Default "08:00". */
+  at?: string;
+  /** Whether this notification is enabled. Default true. */
+  enabled?: boolean;
+  /**
+   * Custom Claude analysis prompt (only used when type === 'ai').
+   * Must contain the `{LOG_DATA}` placeholder.
+   * When absent the built-in DEFAULT_PROMPT is used.
+   */
+  prompt?: string;
+  /** Local directory path for Markdown archive. Empty = disabled. */
+  localStoragePath?: string;
+  /** Feishu doc URL or token for cloud archive. Empty = disabled. */
+  feishuDocUrl?: string;
+}
+
+/**
+ * Configuration for scheduled tasks.
  * All fields are optional — sensible defaults apply when absent.
  */
 export interface ScheduleConfig {
   /**
-   * Local time (HH:MM, 24-hour) at which the daily digest fires.
-   * Default "08:00". Example: "09:30".
+   * List of scheduled notifications. Each entry fires independently once per day.
+   * When absent or empty, falls back to legacy dailyDigest* fields for compatibility.
    */
+  notifications?: NotificationConfig[];
+
+  // ── Legacy fields (deprecated) — kept for backward-compat read/migration ──
+  /** @deprecated Use notifications instead. */
   dailyDigestAt?: string;
-  /**
-   * Whether the daily digest is enabled. Default true.
-   * Toggle via `/digest on` / `/digest off`.
-   */
+  /** @deprecated Use notifications instead. */
   dailyDigestEnabled?: boolean;
-  /**
-   * Custom analysis prompt sent to Claude when generating the digest.
-   * When absent the built-in default prompt is used (extract product bugs
-   * and owner feedback/needs from the log). Set via `/digest prompt <text>`,
-   * reset via `/digest prompt reset`.
-   */
+  /** @deprecated Use notifications instead. */
   dailyDigestPrompt?: string;
 }
+
+/** The built-in default notification shown when no notifications are configured. */
+export const DEFAULT_NOTIFICATION: NotificationConfig = {
+  id: 'daily-digest',
+  name: '每日运行日报',
+  type: 'basic',
+  at: '08:00',
+  enabled: true,
+};
 
 /**
  * Top-level config shape on disk.
@@ -280,13 +322,42 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
 }
 
 /** Resolve schedule config with defaults applied. */
-export function getScheduleConfig(cfg: AppConfig): Required<Omit<ScheduleConfig, 'dailyDigestPrompt'>> & Pick<ScheduleConfig, 'dailyDigestPrompt'> {
+export function getScheduleConfig(cfg: AppConfig): Required<Omit<ScheduleConfig, 'dailyDigestPrompt' | 'notifications'>> & Pick<ScheduleConfig, 'dailyDigestPrompt' | 'notifications'> {
   const s = cfg.preferences?.schedule ?? {};
   return {
     dailyDigestAt: isValidHHMM(s.dailyDigestAt) ? s.dailyDigestAt! : '08:00',
     dailyDigestEnabled: s.dailyDigestEnabled !== false,
     dailyDigestPrompt: s.dailyDigestPrompt,
+    notifications: s.notifications,
   };
+}
+
+/**
+ * Resolve the effective notifications list for the scheduler.
+ *
+ * Migration logic:
+ *   - If `notifications` is present and non-empty, use it directly.
+ *   - Otherwise, synthesise one notification from legacy dailyDigest* fields
+ *     so existing configs keep working without any user action.
+ */
+export function getResolvedNotifications(cfg: AppConfig): NotificationConfig[] {
+  const s = cfg.preferences?.schedule ?? {};
+
+  if (s.notifications && s.notifications.length > 0) {
+    return s.notifications;
+  }
+
+  // Legacy migration: build a single notification from old fields.
+  const legacy: NotificationConfig = {
+    ...DEFAULT_NOTIFICATION,
+    at: isValidHHMM(s.dailyDigestAt) ? s.dailyDigestAt! : DEFAULT_NOTIFICATION.at,
+    enabled: s.dailyDigestEnabled !== false,
+    // If there was a custom prompt, upgrade to ai type automatically.
+    ...(s.dailyDigestPrompt
+      ? { type: 'ai' as const, prompt: s.dailyDigestPrompt }
+      : {}),
+  };
+  return [legacy];
 }
 
 /** Returns true if s is a valid "HH:MM" 24-hour string. */

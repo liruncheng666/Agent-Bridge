@@ -11,7 +11,7 @@ import {
   accountFormCard,
   accountSuccessCard,
 } from '../card/account-cards';
-import { configCancelledCard, configFormCard, configSavedCard } from '../card/config-card';
+import { configCancelledCard, configFormCard, configSavedCard, notificationEditCard } from '../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
@@ -22,7 +22,6 @@ import {
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
-  getScheduleConfig,
   isValidHHMM,
   secretKeyForApp,
 } from '../config/schema';
@@ -77,8 +76,9 @@ import { fetchKnownChats, fetchMemberNames, type KnownChat } from '../bot/lark-i
 import { todayKey } from '../bot/scheduler';
 import { readDayLogs } from '../digest/log-reader';
 import { summarizeWithClaude } from '../digest/claude-summarizer';
-import { formatDigestPost, type PostContent } from '../digest/format';
-import { scanActiveSessions } from '../tasks/session-scanner';
+import { formatDigestPost, formatBasicPost, type PostContent } from '../digest/format';
+import { scanActiveSessions, getSessionDetail } from '../tasks/session-scanner';
+import { getResolvedNotifications } from '../config/schema';
 
 export interface Controls {
   profile: string;
@@ -2020,6 +2020,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     admins: access.admins,
     knownChats: ctx.controls.knownChats ?? [],
     groupRoles: access.groupRoles,
+    notifications: getResolvedNotifications(ctx.controls.cfg),
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
@@ -2235,22 +2236,41 @@ async function handleDigest(args: string, ctx: CommandContext): Promise<void> {
   const parts = args.trim().split(/\s+/).filter(Boolean);
   const sub = parts[0]?.toLowerCase();
 
-  if (!sub || sub === 'status') {
-    const sc = getScheduleConfig(ctx.controls.cfg);
-    const status = sc.dailyDigestEnabled ? '已启用' : '已关闭';
-    const prompt = sc.dailyDigestPrompt ? `自定义 prompt: ${sc.dailyDigestPrompt.slice(0, 60)}…` : '使用内置默认 prompt';
-    await reply(ctx, `**日报调度状态**\n状态: ${status}\n时间: ${sc.dailyDigestAt} (本地时间)\n${prompt}\n\n命令：\n  /digest now — 立即触发\n  /digest on/off — 开关\n  /digest at HH:MM — 修改时间`);
+  // /digest or /digest list — show all notifications status
+  if (!sub || sub === 'status' || sub === 'list') {
+    const notifications = getResolvedNotifications(ctx.controls.cfg);
+    if (notifications.length === 0) {
+      await reply(ctx, '当前无定时通知配置。可在 `/config` 中添加。');
+      return;
+    }
+    const lines = notifications.map((n, i) => {
+      const at = n.at ?? '08:00';
+      const enabled = n.enabled !== false ? '已启用' : '已关闭';
+      const type = n.type === 'ai' ? 'AI 分析' : '基础统计';
+      return `**${i + 1}.** \`${n.id}\` — ${n.name}  ${enabled}  ${at}  [${type}]`;
+    });
+    await reply(ctx, `**定时通知列表**\n\n${lines.join('\n')}\n\n命令：\n  /digest now — 立即触发默认日报\n  /digest now <id> — 立即触发指定通知\n  /digest on/off — 开关默认日报\n  /digest at HH:MM — 修改默认日报时间`);
     return;
   }
 
+  // /digest now [<id>] — trigger immediately
   if (sub === 'now') {
-    await reply(ctx, '⏳ 正在生成日报…');
+    const targetId = parts[1] ?? 'daily-digest';
+    await reply(ctx, `⏳ 正在生成通知「${targetId}」…`);
 
     const ownerOpenId = ctx.controls.botOwnerId;
     if (!ownerOpenId) {
       await reply(ctx, '❌ 无法获取 owner open_id，请稍后重试。');
       return;
     }
+
+    const notifications = getResolvedNotifications(ctx.controls.cfg);
+    const notification = notifications.find((n) => n.id === targetId);
+    if (!notification) {
+      await reply(ctx, `❌ 未找到通知「${targetId}」，发 /digest list 查看可用 id。`);
+      return;
+    }
+
     const appPaths = resolveAppPaths({ profile: ctx.controls.profile });
     const dateKey = todayKey();
     const logData = await readDayLogs(appPaths.logsDir, dateKey, ownerOpenId);
@@ -2258,20 +2278,62 @@ async function handleDigest(args: string, ctx: CommandContext): Promise<void> {
       await reply(ctx, `📋 今日（${dateKey}）暂无运行日志。`);
       return;
     }
-    const sc = getScheduleConfig(ctx.controls.cfg);
-    const summary = await summarizeWithClaude(logData, sc.dailyDigestPrompt, appPaths.logsDir);
-    const post = formatDigestPost(logData, summary, ctx.controls.profile);
+
+    let post: PostContent;
+    if (notification.type === 'ai') {
+      const summary = await summarizeWithClaude(logData, notification.prompt, appPaths.logsDir);
+      post = formatDigestPost(logData, summary, ctx.controls.profile);
+    } else {
+      post = formatBasicPost(logData, ctx.controls.profile);
+    }
+
     await ctx.channel.send(ctx.msg.chatId, { markdown: digestPostToMarkdown(post) }, { replyTo: ctx.msg.messageId });
     return;
   }
 
-  if (sub === 'on' || sub === 'off') {
-    const enabled = sub === 'on';
-    await saveSchedulePreference(ctx, { dailyDigestEnabled: enabled });
-    await reply(ctx, `✅ 日报已${enabled ? '启用' : '关闭'}。`);
+  // /digest prompt [reset] — view or reset the default daily-digest prompt
+  if (sub === 'prompt') {
+    const action = parts[1]?.toLowerCase();
+    const notifications = getResolvedNotifications(ctx.controls.cfg);
+    const defaultNotif = notifications.find((n) => n.id === 'daily-digest');
+
+    if (action === 'reset') {
+      // Clear prompt on the daily-digest notification
+      await saveNotificationPatch(ctx, 'daily-digest', { prompt: undefined, type: 'basic' });
+      await reply(ctx, '✅ 默认日报 prompt 已重置为内置默认（基础统计模式）。');
+      return;
+    }
+
+    // Show current prompt
+    if (!defaultNotif) {
+      await reply(ctx, '_默认日报通知未找到，请在 /config 中添加。_');
+      return;
+    }
+    if (defaultNotif.type === 'basic') {
+      await reply(
+        ctx,
+        '当前默认日报类型：**基础统计**（无 AI 分析，无自定义 prompt）。\n\n' +
+        '如需 AI 分析，请在 `/config` 中将类型改为「AI 分析」并配置 prompt。',
+      );
+      return;
+    }
+    const currentPrompt = defaultNotif.prompt ?? '（使用内置默认 prompt）';
+    const preview = currentPrompt.length > 300
+      ? `${currentPrompt.slice(0, 300)}…（共 ${currentPrompt.length} 字，完整版请在 /config 查看）`
+      : currentPrompt;
+    await reply(ctx, `**当前 AI 分析 Prompt**\n\n\`\`\`\n${preview}\n\`\`\`\n\n发 \`/digest prompt reset\` 重置为内置默认。`);
     return;
   }
 
+  // /digest on | off — toggle default notification
+  if (sub === 'on' || sub === 'off') {
+    const enabled = sub === 'on';
+    await saveSchedulePreference(ctx, { dailyDigestEnabled: enabled });
+    await reply(ctx, `✅ 默认日报已${enabled ? '启用' : '关闭'}。`);
+    return;
+  }
+
+  // /digest at HH:MM — change default notification time
   if (sub === 'at') {
     const time = parts[1];
     if (!isValidHHMM(time)) {
@@ -2279,11 +2341,118 @@ async function handleDigest(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     await saveSchedulePreference(ctx, { dailyDigestAt: time });
-    await reply(ctx, `✅ 日报触发时间已设为 ${time}（本地时间）。`);
+    await reply(ctx, `✅ 默认日报触发时间已设为 ${time}（本地时间）。`);
     return;
   }
 
-  await reply(ctx, '用法：/digest [now | on | off | at HH:MM]');
+  // /digest notification.* — card action handlers for /config notification panel
+  if (sub === 'notification') {
+    const action = parts[1]?.toLowerCase();
+    const notifId = parts.slice(2).join(' ').trim() || (ctx.formValue?.arg as string | undefined) || '';
+
+    if (action === 'add') {
+      // Generate a short id and open an edit card for a new notification
+      const newId = `notif-${Math.random().toString(36).slice(2, 8)}`;
+      const newNotif: import('../config/schema').NotificationConfig = {
+        id: newId,
+        name: '新通知',
+        type: 'basic',
+        at: '09:00',
+        enabled: true,
+      };
+      const card = notificationEditCard(newNotif);
+      await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+      return;
+    }
+
+    if (action === 'edit') {
+      const id = notifId;
+      const notifications = getResolvedNotifications(ctx.controls.cfg);
+      const notif = notifications.find((n) => n.id === id);
+      if (!notif) {
+        await reply(ctx, `❌ 未找到通知「${id}」`);
+        return;
+      }
+      const card = notificationEditCard(notif);
+      await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+      return;
+    }
+
+    if (action === 'save') {
+      const id = notifId || (ctx.formValue?.arg as string | undefined) || '';
+      const fv = ctx.formValue ?? {};
+      const rawName = String(fv.notif_name ?? '').trim();
+      const rawType = String(fv.notif_type ?? '').trim();
+      const rawAt = String(fv.notif_at ?? '').trim();
+      const rawEnabled = String(fv.notif_enabled ?? '').trim();
+      const rawPrompt = String(fv.notif_prompt ?? '').trim();
+      const rawLocal = String(fv.notif_local_path ?? '').trim();
+      const rawDoc = String(fv.notif_feishu_doc ?? '').trim();
+
+      if (!id) { await reply(ctx, '❌ 通知 id 缺失'); return; }
+      if (!rawName) { await reply(ctx, '❌ 名称不能为空'); return; }
+      if (rawAt && !isValidHHMM(rawAt)) { await reply(ctx, '❌ 时间格式错误，请使用 HH:MM'); return; }
+      if (rawPrompt.length > 2000) { await reply(ctx, '❌ Prompt 超过 2000 字符'); return; }
+
+      const patch: Partial<import('../config/schema').NotificationConfig> = {
+        name: rawName,
+        type: rawType === 'ai' ? 'ai' : 'basic',
+        at: rawAt || '08:00',
+        enabled: rawEnabled !== 'false',
+        ...(rawType === 'ai' && rawPrompt ? { prompt: rawPrompt } : { prompt: undefined }),
+        ...(rawLocal ? { localStoragePath: rawLocal } : { localStoragePath: undefined }),
+        ...(rawDoc ? { feishuDocUrl: rawDoc } : { feishuDocUrl: undefined }),
+      };
+
+      await saveNotificationPatch(ctx, id, patch);
+      await reply(ctx, `✅ 通知「${rawName}」已保存。`);
+      return;
+    }
+
+    if (action === 'delete') {
+      const id = notifId;
+      if (!id) { await reply(ctx, '❌ 通知 id 缺失'); return; }
+      await withConfigFileLock(ctx.controls.configPath, async () => {
+        const root = await loadRootConfig(ctx.controls.configPath);
+        const notifications = getResolvedNotifications(ctx.controls.cfg);
+        const updated = notifications.filter((n) => n.id !== id);
+        const newSchedule = { ...(ctx.controls.cfg.preferences?.schedule ?? {}), notifications: updated };
+        if (!root) {
+          ctx.controls.cfg.preferences = { ...(ctx.controls.cfg.preferences ?? {}), schedule: newSchedule };
+          await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
+          return;
+        }
+        const profile = root.profiles[ctx.controls.profile];
+        if (!profile) return;
+        root.profiles[ctx.controls.profile] = {
+          ...profile,
+          preferences: { ...profile.preferences, schedule: newSchedule },
+        };
+        await saveRootConfig(root, ctx.controls.configPath);
+        ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;
+        ctx.controls.cfg = runtimeProfileConfig(root, ctx.controls.profile);
+      });
+      await reply(ctx, `✅ 通知「${id}」已删除。`);
+      return;
+    }
+
+    if (action === 'trigger') {
+      const id = notifId;
+      if (!id) { await reply(ctx, '❌ 通知 id 缺失'); return; }
+      // Delegate to /digest now <id>
+      await handleDigest(`now ${id}`, ctx);
+      return;
+    }
+
+    if (action === 'cancel') {
+      // Just acknowledge the cancel click silently
+      return;
+    }
+
+    return;
+  }
+
+  await reply(ctx, '用法：/digest [list | now [<id>] | on | off | at HH:MM | prompt [reset]]');
 }
 
 function digestPostToMarkdown(post: PostContent): string {
@@ -2320,13 +2489,120 @@ async function saveSchedulePreference(
   });
 }
 
+/**
+ * Patch a single notification entry by id. Creates it if it doesn't exist.
+ * Merges the patch into the existing entry (partial update).
+ */
+async function saveNotificationPatch(
+  ctx: CommandContext,
+  notificationId: string,
+  patch: Partial<import('../config/schema').NotificationConfig>,
+): Promise<void> {
+  await withConfigFileLock(ctx.controls.configPath, async () => {
+    const root = await loadRootConfig(ctx.controls.configPath);
+    const currentPrefs = ctx.controls.cfg.preferences ?? {};
+    const currentSchedule = currentPrefs.schedule ?? {};
+    const { getResolvedNotifications: resolve } = await import('../config/schema');
+    const notifications = resolve(ctx.controls.cfg);
+    const idx = notifications.findIndex((n) => n.id === notificationId);
+    let updated: import('../config/schema').NotificationConfig[];
+    if (idx >= 0) {
+      updated = notifications.map((n, i) =>
+        i === idx ? { ...n, ...patch } : n,
+      );
+    } else {
+      // Create new entry with defaults
+      const { DEFAULT_NOTIFICATION } = await import('../config/schema');
+      updated = [...notifications, { ...DEFAULT_NOTIFICATION, id: notificationId, ...patch }];
+    }
+    // Remove undefined fields from patched entries
+    updated = updated.map((n) => {
+      const clean = { ...n };
+      for (const k of Object.keys(clean) as (keyof typeof clean)[]) {
+        if (clean[k] === undefined) delete clean[k];
+      }
+      return clean;
+    });
+
+    const newSchedule = { ...currentSchedule, notifications: updated };
+    const newPrefs = { ...currentPrefs, schedule: newSchedule };
+
+    if (!root) {
+      ctx.controls.cfg.preferences = newPrefs;
+      await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
+      return;
+    }
+    const profile = root.profiles[ctx.controls.profile];
+    if (!profile) throw new Error(`profile not found: ${ctx.controls.profile}`);
+    root.profiles[ctx.controls.profile] = {
+      ...profile,
+      preferences: { ...profile.preferences, schedule: newSchedule },
+    };
+    await saveRootConfig(root, ctx.controls.configPath);
+    ctx.controls.profileConfig = root.profiles[ctx.controls.profile]!;
+    ctx.controls.cfg = runtimeProfileConfig(root, ctx.controls.profile);
+  });
+}
+
 // ────────────── /tasks — local terminal session status ──────────────
 
 async function handleTasks(args: string, ctx: CommandContext): Promise<void> {
-  const showAll = args.trim().toLowerCase() === 'all';
+  const trimmed = args.trim();
   const windowMin = 60;
   const staleCutoffMin = 30;
 
+  // /tasks <n> — detail view for a specific session
+  const indexArg = Number.parseInt(trimmed, 10);
+  if (Number.isFinite(indexArg) && indexArg > 0) {
+    const sessions = await scanActiveSessions(windowMin);
+    const visible = sessions.filter(
+      (s) => !(s.terminal === 'done' && s.minutesAgo > staleCutoffMin),
+    );
+
+    const detail = await getSessionDetail(visible, indexArg);
+    if (!detail) {
+      await reply(
+        ctx,
+        `❌ 编号 ${indexArg} 不存在，当前共有 ${visible.length} 条任务，发 /tasks 查看列表。`,
+      );
+      return;
+    }
+
+    const { summary, lastAssistantText, truncated, pendingQuestions } = detail;
+    const icon = statusIcon(summary);
+    const label = statusLabel(summary);
+    const ago = summary.minutesAgo === 0 ? '刚刚' : `${summary.minutesAgo}分钟前`;
+
+    const lines: string[] = [
+      `────────────────────────`,
+      `会话 **#${indexArg}** · \`${summary.projectName}\``,
+      `状态：${icon} ${label} · ${ago}`,
+      `────────────────────────`,
+    ];
+
+    if (lastAssistantText) {
+      lines.push('**【AI 最新回复】**');
+      lines.push(lastAssistantText);
+      if (truncated) lines.push('_（内容较长已截断，完整内容请在终端查看）_');
+    } else {
+      lines.push('_暂无 AI 回复内容_');
+    }
+
+    if (pendingQuestions.length > 0) {
+      lines.push('');
+      lines.push('**【待确认问题】**');
+      for (const q of pendingQuestions) {
+        lines.push(`❓ ${q}`);
+      }
+    }
+
+    lines.push('────────────────────────');
+    await reply(ctx, lines.join('\n'));
+    return;
+  }
+
+  // /tasks or /tasks all — list view
+  const showAll = trimmed.toLowerCase() === 'all';
   const sessions = await scanActiveSessions(showAll ? 24 * 60 : windowMin);
 
   const visible = showAll
@@ -2343,11 +2619,13 @@ async function handleTasks(args: string, ctx: CommandContext): Promise<void> {
     const icon = statusIcon(s);
     const label = statusLabel(s);
     const ago = s.minutesAgo === 0 ? '刚刚' : `${s.minutesAgo}分钟前`;
-    const msg = s.lastMessage ? `  "${s.lastMessage.slice(0, 60)}${s.lastMessage.length > 60 ? '…' : ''}"` : '';
-    lines.push(`${icon} **${s.projectName}**  ${label}  ${ago}${msg ? '\n' + msg : ''}`);
+    const msg = s.lastMessage
+      ? `\n    "${s.lastMessage.slice(0, 60)}${s.lastMessage.length > 60 ? '…' : ''}"`
+      : '';
+    lines.push(`**${s.index}.** ${icon} \`${s.projectName}\`  ${label}  ${ago}${msg}`);
   }
 
-  const summary = `📋 本地终端任务（最近${showAll ? '全部' : windowMin + '分钟'}）\n\n${lines.join('\n\n')}`;
+  const summary = `📋 本地终端任务（最近${showAll ? '全部' : windowMin + '分钟'}，共 ${visible.length} 条）\n\n${lines.join('\n\n')}\n\n_发 \`/tasks <编号>\` 查看详情_`;
   await reply(ctx, summary);
 }
 

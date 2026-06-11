@@ -1,6 +1,7 @@
 import type { KnownChat } from '../bot/lark-info';
 import type { GroupRoleConfig } from '../config/profile-schema';
 import type { MessageReplyMode } from '../config/schema';
+import type { NotificationConfig } from '../config/schema';
 
 export interface ConfigFormOpts {
   messageReply: MessageReplyMode;
@@ -15,6 +16,8 @@ export interface ConfigFormOpts {
   knownChats: KnownChat[];
   /** All group role configs keyed by chatId. Used in p2p /config to show group role management. */
   groupRoles?: Record<string, GroupRoleConfig>;
+  /** Current notification list for the digest notifications panel. */
+  notifications?: NotificationConfig[];
 }
 
 /** Build the group roles panel shown in p2p /config. */
@@ -74,6 +77,215 @@ function groupRolesPanel(opts: ConfigFormOpts): object[] {
   }
 
   return elements;
+}
+
+/** Build the notifications management panel for /config. */
+function notificationsPanel(notifications: NotificationConfig[]): object[] {
+  const elements: object[] = [
+    {
+      tag: 'markdown',
+      content: '_每条通知独立配置触发时间、类型和存储路径。_',
+    },
+    { tag: 'hr' },
+  ];
+
+  if (notifications.length === 0) {
+    elements.push({
+      tag: 'markdown',
+      content: '_暂无通知，点下方按钮新增。_',
+    });
+  }
+
+  for (const n of notifications) {
+    const typeLabel = n.type === 'ai' ? 'AI 分析' : '基础统计';
+    const at = n.at ?? '08:00';
+    const enabledLabel = n.enabled !== false ? '✅ 已启用' : '⭕ 已关闭';
+    const storageInfo = [
+      n.localStoragePath ? `💾 本地: ${n.localStoragePath}` : '',
+      n.feishuDocUrl ? `📄 飞书云文档` : '',
+    ].filter(Boolean).join('  ');
+
+    elements.push({
+      tag: 'markdown',
+      content:
+        `**${n.name}** \`${n.id}\`\n` +
+        `${enabledLabel}  类型：${typeLabel}  时间：${at}` +
+        (storageInfo ? `\n${storageInfo}` : ''),
+    });
+
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'flow',
+      horizontal_spacing: 'small',
+      columns: [
+        {
+          tag: 'column',
+          width: 'auto',
+          elements: [{
+            tag: 'button',
+            text: { tag: 'plain_text', content: '编辑' },
+            type: 'default',
+            size: 'small',
+            behaviors: [{ type: 'callback', value: { cmd: 'digest.notification.edit', arg: n.id } }],
+          }],
+        },
+        {
+          tag: 'column',
+          width: 'auto',
+          elements: [{
+            tag: 'button',
+            text: { tag: 'plain_text', content: '立即触发' },
+            type: 'default',
+            size: 'small',
+            behaviors: [{ type: 'callback', value: { cmd: 'digest.notification.trigger', arg: n.id } }],
+          }],
+        },
+        {
+          tag: 'column',
+          width: 'auto',
+          elements: [{
+            tag: 'button',
+            text: { tag: 'plain_text', content: '删除' },
+            type: 'danger',
+            size: 'small',
+            behaviors: [{ type: 'callback', value: { cmd: 'digest.notification.delete', arg: n.id } }],
+          }],
+        },
+      ],
+    });
+    elements.push({ tag: 'hr' });
+  }
+
+  // Remove last hr
+  if (elements.length > 0 && (elements[elements.length - 1] as { tag?: string }).tag === 'hr') {
+    elements.pop();
+  }
+
+  elements.push({ tag: 'hr' });
+  elements.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: '+ 新增通知' },
+    type: 'primary',
+    behaviors: [{ type: 'callback', value: { cmd: 'digest.notification.add' } }],
+  });
+
+  return elements;
+}
+
+/** Build the notification edit form card (sent as a new card when user clicks 编辑). */
+export function notificationEditCard(n: NotificationConfig): object {
+  const isAi = n.type === 'ai';
+  return {
+    schema: '2.0',
+    config: { summary: { content: `编辑通知：${n.name}` } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content: `⚙️ **编辑通知：${n.name}**`,
+        },
+        { tag: 'hr' },
+        {
+          tag: 'form',
+          name: 'notification_edit_form',
+          elements: [
+            { tag: 'markdown', content: '**名称**' },
+            {
+              tag: 'input',
+              name: 'notif_name',
+              default_value: n.name,
+              placeholder: { tag: 'plain_text', content: '通知名称' },
+              input_type: 'text',
+            },
+            { tag: 'markdown', content: '\n**类型**' },
+            {
+              tag: 'select_static',
+              name: 'notif_type',
+              initial_option: n.type,
+              options: [
+                { text: { tag: 'plain_text', content: '基础统计（无 AI）' }, value: 'basic' },
+                { text: { tag: 'plain_text', content: 'AI 分析' }, value: 'ai' },
+              ],
+            },
+            { tag: 'markdown', content: '\n**触发时间（HH:MM）**' },
+            {
+              tag: 'input',
+              name: 'notif_at',
+              default_value: n.at ?? '08:00',
+              placeholder: { tag: 'plain_text', content: '08:00' },
+              input_type: 'text',
+            },
+            { tag: 'markdown', content: '\n**启用**' },
+            {
+              tag: 'select_static',
+              name: 'notif_enabled',
+              initial_option: n.enabled !== false ? 'true' : 'false',
+              options: [
+                { text: { tag: 'plain_text', content: '启用' }, value: 'true' },
+                { text: { tag: 'plain_text', content: '关闭' }, value: 'false' },
+              ],
+            },
+            ...(isAi ? [
+              { tag: 'markdown', content: '\n**AI 分析 Prompt**（含 {LOG_DATA} 占位符，最多 2000 字）' },
+              {
+                tag: 'input',
+                name: 'notif_prompt',
+                default_value: n.prompt ?? '',
+                placeholder: { tag: 'plain_text', content: '自定义 prompt，留空使用内置默认' },
+                input_type: 'multiline_text',
+                max_length: 2000,
+              },
+            ] : []),
+            { tag: 'markdown', content: '\n**本地存储路径**（目录路径，留空关闭）' },
+            {
+              tag: 'input',
+              name: 'notif_local_path',
+              default_value: n.localStoragePath ?? '',
+              placeholder: { tag: 'plain_text', content: '/Users/xxx/digests' },
+              input_type: 'text',
+            },
+            { tag: 'markdown', content: '\n**飞书云文档 URL**（留空关闭）' },
+            {
+              tag: 'input',
+              name: 'notif_feishu_doc',
+              default_value: n.feishuDocUrl ?? '',
+              placeholder: { tag: 'plain_text', content: 'https://xxx.feishu.cn/docx/...' },
+              input_type: 'text',
+            },
+            { tag: 'hr' },
+            {
+              tag: 'column_set',
+              flex_mode: 'flow',
+              horizontal_spacing: 'small',
+              columns: [
+                {
+                  tag: 'column',
+                  width: 'auto',
+                  elements: [{
+                    tag: 'button',
+                    name: 'save_btn',
+                    text: { tag: 'plain_text', content: '保存' },
+                    type: 'primary',
+                    form_action_type: 'submit',
+                    behaviors: [{ type: 'callback', value: { cmd: 'digest.notification.save', arg: n.id } }],
+                  }],
+                },
+                {
+                  tag: 'column',
+                  width: 'auto',
+                  elements: [{
+                    tag: 'button',
+                    text: { tag: 'plain_text', content: '取消' },
+                    behaviors: [{ type: 'callback', value: { cmd: 'digest.notification.cancel' } }],
+                  }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  };
 }
 
 function collapsedAccessPanel(title: string, elements: object[]): object {
@@ -247,6 +459,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
             collapsedAccessPanel('🔒 **访问控制**（点击展开）', accessElements),
             { tag: 'hr' },
             collapsedAccessPanel('👥 **群角色管理**（点击展开）', groupRolesPanel(opts)),
+            { tag: 'hr' },
+            collapsedAccessPanel('🔔 **定时通知**（点击展开）', notificationsPanel(opts.notifications ?? [])),
             {
               tag: 'column_set',
               flex_mode: 'flow',

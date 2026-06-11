@@ -58,7 +58,8 @@ import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { startScheduler } from './scheduler';
-import { createDailyDigestTask, catchUpMissedDigests } from '../digest/daily-digest-task';
+import { createNotificationTasks, catchUpMissedDigests } from '../digest/daily-digest-task';
+import { getResolvedNotifications } from '../config/schema';
 import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
@@ -412,6 +413,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       }
       consecutiveReconnects = 0;
     },
+    botAdded: (evt) => {
+      void handleBotAdded(evt, channel, controls).catch((err) =>
+        log.fail('bot-added', err),
+      );
+    },
     // Classify common WS errors into the `network` phase so /doctor and grep
     // can find them without scanning generic `ws.fail` entries.
     error: (err) => {
@@ -471,7 +477,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   const logsDir = deps.appPaths?.logsDir;
   const scheduler = startScheduler({
-    tasks: [createDailyDigestTask()],
+    tasks: createNotificationTasks(getResolvedNotifications(cfg)),
     getContext: () => {
       const ownerOpenId = controls.botOwnerId;
       if (!ownerOpenId || !logsDir) return undefined;
@@ -1309,4 +1315,90 @@ function parseJsonOrRaw(input: string): unknown {
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
+}
+
+/**
+ * REQ-H: When the bot is added to a group by the owner, automatically add
+ * that group to the allowedChats whitelist and optionally send a welcome message.
+ *
+ * Non-owner additions are silently ignored — the bot stays invisible in those
+ * groups until the owner manually runs /invite group.
+ */
+async function handleBotAdded(
+  evt: import('@larksuiteoapi/node-sdk').BotAddedEvent,
+  channel: import('@larksuiteoapi/node-sdk').LarkChannel,
+  controls: import('../commands/index').Controls,
+): Promise<void> {
+  const { chatId, operator } = evt;
+  const operatorOpenId = operator.openId;
+
+  log.info('bot-added', 'received', { chatId, operatorOpenId: operatorOpenId.slice(-6) });
+
+  // Only auto-add when the operator is the bot owner.
+  const ownerId = controls.botOwnerId;
+  if (!ownerId || operatorOpenId !== ownerId) {
+    log.info('bot-added', 'skip-non-owner', { chatId });
+    return;
+  }
+
+  // Add chatId to allowedChats — idempotent.
+  const profileConfig = controls.profileConfig;
+  const already = profileConfig.access.allowedChats.includes(chatId);
+  if (!already) {
+    const { withConfigFileLock, loadRootConfig, saveRootConfig, runtimeProfileConfig } =
+      await import('../config/profile-store');
+    const { saveConfig } = await import('../config/store');
+
+    await withConfigFileLock(controls.configPath, async () => {
+      const root = await loadRootConfig(controls.configPath);
+      if (!root) {
+        const next = [...profileConfig.access.allowedChats, chatId];
+        controls.profileConfig = {
+          ...profileConfig,
+          access: { ...profileConfig.access, allowedChats: next },
+        };
+        controls.cfg.preferences = {
+          ...(controls.cfg.preferences ?? {}),
+          access: { ...controls.cfg.preferences?.access, allowedChats: next },
+        };
+        await saveConfig(controls.cfg, controls.configPath);
+        return;
+      }
+      const profile = root.profiles[controls.profile];
+      if (!profile) return;
+      const nextAccess = {
+        ...profile.access,
+        allowedChats: [...profile.access.allowedChats, chatId],
+      };
+      root.profiles[controls.profile] = { ...profile, access: nextAccess };
+      await saveRootConfig(root, controls.configPath);
+      controls.profileConfig = root.profiles[controls.profile]!;
+      controls.cfg = runtimeProfileConfig(root, controls.profile);
+    });
+
+    log.info('bot-added', 'auto-allowed', { chatId });
+  }
+
+  // Send welcome message if autoWelcome is not explicitly disabled.
+  const autoWelcome = controls.cfg.preferences?.autoWelcome !== false;
+  if (autoWelcome) {
+    try {
+      await channel.rawClient.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          msg_type: 'text',
+          content: JSON.stringify({
+            text: '👋 已加入本群，发 /help 查看可用命令。\n群聊默认需要 @bot 才会响应消息，owner 可通过 /config 调整。',
+          }),
+        },
+      });
+      log.info('bot-added', 'welcome-sent', { chatId });
+    } catch (err) {
+      log.warn('bot-added', 'welcome-failed', {
+        chatId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }

@@ -30,7 +30,7 @@ const KEEPALIVE_INTERVAL_MS = 15_000;
 const SLEEP_DETECT_MS = 30_000;
 const TIMER_STORM_GUARD_MS = 5_000;
 const HTTP_PROBE_TIMEOUT_MS = 5_000;
-const DEAD_THRESHOLD = 3;
+const DEAD_THRESHOLD = 8;
 const NETWORK_DOWN_LOG_EVERY = 20; // log roughly every 5min while network is down
 
 export interface KeepaliveDeps {
@@ -83,6 +83,16 @@ export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
       }
       consecutiveDown = 0;
       networkDownTicks = 0;
+      return;
+    }
+
+    // SDK is actively reconnecting — let it finish, don't interrupt.
+    if (status.state === 'reconnecting' || status.state === 'connecting') {
+      log.info('keepalive', 'sdk-reconnecting', {
+        state: status.state,
+        reconnectAttempts: status.reconnectAttempts,
+      });
+      consecutiveDown = 0;
       return;
     }
 

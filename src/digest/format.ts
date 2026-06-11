@@ -36,6 +36,15 @@ export function formatDigestPost(
     }
   }
 
+  // ── 待办清单（可选扩展字段，由自定义 prompt 输出） ──
+  if (summary.pendingItems && summary.pendingItems.length > 0) {
+    if (lines.length > 0) lines.push(text(''));
+    lines.push(text(`📋 待办清单（${summary.pendingItems.length} 项）`));
+    for (const item of summary.pendingItems) {
+      lines.push(text(`  · ${item}`));
+    }
+  }
+
   // ── Fallback notice ──
   if (summary.raw) {
     if (lines.length > 0) lines.push(text(''));
@@ -61,4 +70,32 @@ export function formatDigestPost(
       content: lines,
     },
   };
+}
+
+/**
+ * Basic notification format: pure statistics, no AI analysis required.
+ * Used when notification.type === 'basic'.
+ */
+export function formatBasicPost(logData: DigestLogData, profile: string): PostContent {
+  const title = `【日报】${logData.date} · ${profile}`;
+  const text = (t: string) => [{ tag: 'text', text: t }];
+
+  const errorCount = logData.errors.length;
+  const lines = [
+    text('运行统计'),
+    text(`  · 活跃会话：${logData.activeScopes} 个`),
+    text(`  · 消息总量：${logData.totalMessages} 条`),
+    text(`  · 命令次数：${logData.commandCount} 次`),
+    text(`  · 错误数量：${errorCount} 条`),
+  ];
+
+  if (errorCount > 0) {
+    lines.push(text(''));
+    lines.push(text(`错误摘要（最近 ${Math.min(errorCount, 5)} 条）`));
+    for (const err of logData.errors.slice(0, 5)) {
+      lines.push(text(`  · [${err.phase}] ${err.err.slice(0, 80)}`));
+    }
+  }
+
+  return { zh_cn: { title, content: lines } };
 }

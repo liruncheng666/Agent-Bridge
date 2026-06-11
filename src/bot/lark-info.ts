@@ -24,6 +24,15 @@ export async function fetchKnownChats(channel: LarkChannel): Promise<KnownChat[]
         method: 'GET',
         url: `/open-apis/im/v1/chats?${params.toString()}`,
       });
+      // Null response = token refresh or transient SDK error; treat as throw so catch handles it.
+      if (resp == null) {
+        throw new Error('chats API returned null response (likely token refresh)');
+      }
+      // Guard against business-layer error codes (e.g. 99991663 token invalid).
+      const respCode = (resp as { code?: number }).code;
+      if (respCode != null && respCode !== 0) {
+        throw new Error(`chats API error code ${respCode}`);
+      }
       const data = (
         resp as {
           data?: {
