@@ -4,7 +4,7 @@ import { getResolvedNotifications } from '../config/schema';
 import type { NotificationConfig } from '../config/schema';
 import { readDayLogs } from './log-reader';
 import { summarizeWithClaude } from './claude-summarizer';
-import { formatDigestPost, formatBasicPost } from './format';
+import { formatDigestPost, formatBasicPost, toDigestCard } from './format';
 import { saveToLocal } from './local-store';
 import { appendToFeishuDoc } from './feishu-doc-writer';
 import { yesterdayKey, getDailyDigestAt, isDailyDigestEnabled } from '../bot/scheduler';
@@ -155,7 +155,12 @@ async function runNotificationForDate(
   let post: { zh_cn: { title: string; content: unknown } };
 
   if (notification.type === 'ai') {
-    const summary = await summarizeWithClaude(logData, notification.prompt, ctx.logsDir);
+    const summary = await summarizeWithClaude(
+      logData,
+      notification.prompt,
+      ctx.logsDir,
+      notification.model ?? ctx.cfg.preferences?.schedule?.digestModel,
+    );
     post = formatDigestPost(logData, summary, ctx.profile);
   } else {
     post = formatBasicPost(logData, ctx.profile);
@@ -252,18 +257,20 @@ async function sendAndStore(
   }
 }
 
-/** Send a Feishu post message to the bot owner. Throws on failure. */
+/** Send a Feishu interactive card to the bot owner. Throws on failure. */
 async function sendRawMessage(
   ctx: TaskContext,
   postContent: { zh_cn: { title: string; content: unknown } },
 ): Promise<void> {
+  // Convert post to interactive card for better formatting (markdown bold, hr, etc.)
+  const card = toDigestCard(postContent as import('./format').PostContent);
   try {
     const resp = await ctx.rawClient.im.v1.message.create({
       params: { receive_id_type: 'open_id' },
       data: {
         receive_id: ctx.ownerOpenId,
-        msg_type: 'post',
-        content: JSON.stringify(postContent),
+        msg_type: 'interactive',
+        content: JSON.stringify(card),
       },
     });
     const respCode = (resp as { code?: number } | undefined)?.code;

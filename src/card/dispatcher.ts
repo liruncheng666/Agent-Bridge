@@ -256,13 +256,14 @@ function isSignedBridgeCallback(payload: Record<string, unknown>): boolean {
 
 /** Turn a button payload like {cmd:'ws.use', name:'proj-a'} into the arg
  * string the text-command handler expects: 'use proj-a'. Accepts `arg`
- * (preferred, generic) or `name` (legacy ws cards). */
+ * (preferred, generic) or `name` (legacy ws cards).
+ * When cmd has no sub-command (single segment), the arg is passed directly. */
 function composeArgs(sub: string, payload: Record<string, unknown>): string {
-  if (!sub) return '';
   const arg =
     (typeof payload.arg === 'string' && payload.arg) ||
     (typeof payload.name === 'string' && payload.name) ||
     '';
+  if (!sub) return arg;
   return arg ? `${sub} ${arg}` : sub;
 }
 

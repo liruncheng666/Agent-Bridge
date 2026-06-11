@@ -76,7 +76,7 @@ import { fetchKnownChats, fetchMemberNames, type KnownChat } from '../bot/lark-i
 import { todayKey } from '../bot/scheduler';
 import { readDayLogs } from '../digest/log-reader';
 import { summarizeWithClaude } from '../digest/claude-summarizer';
-import { formatDigestPost, formatBasicPost, type PostContent } from '../digest/format';
+import { formatDigestPost, formatBasicPost, toDigestCard, type PostContent } from '../digest/format';
 import { scanActiveSessions, getSessionDetail } from '../tasks/session-scanner';
 import { getResolvedNotifications } from '../config/schema';
 
@@ -2281,13 +2281,19 @@ async function handleDigest(args: string, ctx: CommandContext): Promise<void> {
 
     let post: PostContent;
     if (notification.type === 'ai') {
-      const summary = await summarizeWithClaude(logData, notification.prompt, appPaths.logsDir);
+      const summary = await summarizeWithClaude(
+        logData,
+        notification.prompt,
+        appPaths.logsDir,
+        notification.model ?? ctx.controls.cfg.preferences?.schedule?.digestModel,
+      );
       post = formatDigestPost(logData, summary, ctx.controls.profile);
     } else {
       post = formatBasicPost(logData, ctx.controls.profile);
     }
 
-    await ctx.channel.send(ctx.msg.chatId, { markdown: digestPostToMarkdown(post) }, { replyTo: ctx.msg.messageId });
+    const card = toDigestCard(post);
+    await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
     return;
   }
 
@@ -2386,13 +2392,14 @@ async function handleDigest(args: string, ctx: CommandContext): Promise<void> {
       const rawAt = String(fv.notif_at ?? '').trim();
       const rawEnabled = String(fv.notif_enabled ?? '').trim();
       const rawPrompt = String(fv.notif_prompt ?? '').trim();
+      const rawModel = String(fv.notif_model ?? '').trim();
       const rawLocal = String(fv.notif_local_path ?? '').trim();
       const rawDoc = String(fv.notif_feishu_doc ?? '').trim();
 
       if (!id) { await reply(ctx, '❌ 通知 id 缺失'); return; }
       if (!rawName) { await reply(ctx, '❌ 名称不能为空'); return; }
       if (rawAt && !isValidHHMM(rawAt)) { await reply(ctx, '❌ 时间格式错误，请使用 HH:MM'); return; }
-      if (rawPrompt.length > 2000) { await reply(ctx, '❌ Prompt 超过 2000 字符'); return; }
+      if (rawPrompt.length > 1000) { await reply(ctx, '❌ Prompt 超过 1000 字符'); return; }
 
       const patch: Partial<import('../config/schema').NotificationConfig> = {
         name: rawName,
@@ -2400,6 +2407,7 @@ async function handleDigest(args: string, ctx: CommandContext): Promise<void> {
         at: rawAt || '08:00',
         enabled: rawEnabled !== 'false',
         ...(rawType === 'ai' && rawPrompt ? { prompt: rawPrompt } : { prompt: undefined }),
+        ...(rawModel ? { model: rawModel } : { model: undefined }),
         ...(rawLocal ? { localStoragePath: rawLocal } : { localStoragePath: undefined }),
         ...(rawDoc ? { feishuDocUrl: rawDoc } : { feishuDocUrl: undefined }),
       };
@@ -2551,7 +2559,7 @@ async function handleTasks(args: string, ctx: CommandContext): Promise<void> {
   const windowMin = 60;
   const staleCutoffMin = 30;
 
-  // /tasks <n> — detail view for a specific session
+  // /tasks <n> — detail card for a specific session
   const indexArg = Number.parseInt(trimmed, 10);
   if (Number.isFinite(indexArg) && indexArg > 0) {
     const sessions = await scanActiveSessions(windowMin);
@@ -2571,37 +2579,59 @@ async function handleTasks(args: string, ctx: CommandContext): Promise<void> {
     const { summary, lastAssistantText, truncated, pendingQuestions } = detail;
     const icon = statusIcon(summary);
     const label = statusLabel(summary);
-    const ago = summary.minutesAgo === 0 ? '刚刚' : `${summary.minutesAgo}分钟前`;
+    const ago = summary.minutesAgo === 0 ? '刚刚' : `${summary.minutesAgo} 分钟前`;
 
-    const lines: string[] = [
-      `────────────────────────`,
-      `会话 **#${indexArg}** · \`${summary.projectName}\``,
-      `状态：${icon} ${label} · ${ago}`,
-      `────────────────────────`,
+    const bodyElements: object[] = [
+      {
+        tag: 'column_set',
+        flex_mode: 'flow',
+        horizontal_spacing: 'default',
+        columns: [
+          {
+            tag: 'column',
+            width: 'weighted',
+            weight: 1,
+            elements: [{
+              tag: 'markdown',
+              content: `**⠂ ${summary.cliTitle}**\n${icon} **${label}**　🕐 **${ago}**`,
+            }],
+          },
+        ],
+      },
+      { tag: 'hr' },
     ];
 
     if (lastAssistantText) {
-      lines.push('**【AI 最新回复】**');
-      lines.push(lastAssistantText);
-      if (truncated) lines.push('_（内容较长已截断，完整内容请在终端查看）_');
+      bodyElements.push({ tag: 'markdown', content: '**AI 最新回复**' });
+      bodyElements.push({ tag: 'markdown', content: lastAssistantText.slice(0, 800) });
+      if (truncated) {
+        bodyElements.push({
+          tag: 'markdown',
+          content: '_内容较长已截断，完整内容请在终端查看_',
+        });
+      }
     } else {
-      lines.push('_暂无 AI 回复内容_');
+      bodyElements.push({ tag: 'markdown', content: '_暂无 AI 回复内容_' });
     }
 
     if (pendingQuestions.length > 0) {
-      lines.push('');
-      lines.push('**【待确认问题】**');
+      bodyElements.push({ tag: 'hr' });
+      bodyElements.push({ tag: 'markdown', content: '**待确认问题**' });
       for (const q of pendingQuestions) {
-        lines.push(`❓ ${q}`);
+        bodyElements.push({ tag: 'markdown', content: `❓ ${q}` });
       }
     }
 
-    lines.push('────────────────────────');
-    await reply(ctx, lines.join('\n'));
+    const detailCard = {
+      schema: '2.0',
+      config: { summary: { content: `任务详情：${summary.cliTitle}` } },
+      body: { elements: bodyElements },
+    };
+    await ctx.channel.send(ctx.msg.chatId, { card: detailCard }, { replyTo: ctx.msg.messageId });
     return;
   }
 
-  // /tasks or /tasks all — list view
+  // /tasks or /tasks all — list card with per-item detail buttons
   const showAll = trimmed.toLowerCase() === 'all';
   const sessions = await scanActiveSessions(showAll ? 24 * 60 : windowMin);
 
@@ -2610,23 +2640,74 @@ async function handleTasks(args: string, ctx: CommandContext): Promise<void> {
     : sessions.filter((s) => !(s.terminal === 'done' && s.minutesAgo > staleCutoffMin));
 
   if (visible.length === 0) {
-    await reply(ctx, `最近${windowMin}分钟无活跃终端任务。`);
+    await reply(ctx, `最近 ${windowMin} 分钟无活跃终端任务。`);
     return;
   }
 
-  const lines: string[] = [];
+  const cardElements: object[] = [
+    {
+      tag: 'markdown',
+      content: ` **本地终端任务**　最近 ${showAll ? '全部' : windowMin + ' 分钟'}，共 **${visible.length}** 条`,
+    },
+    { tag: 'hr' },
+  ];
+
   for (const s of visible) {
     const icon = statusIcon(s);
     const label = statusLabel(s);
-    const ago = s.minutesAgo === 0 ? '刚刚' : `${s.minutesAgo}分钟前`;
-    const msg = s.lastMessage
-      ? `\n    "${s.lastMessage.slice(0, 60)}${s.lastMessage.length > 60 ? '…' : ''}"`
+    const ago = s.minutesAgo === 0 ? '刚刚' : `${s.minutesAgo} 分钟前`;
+    const snippet = s.lastMessage
+      ? s.lastMessage.slice(0, 50) + (s.lastMessage.length > 50 ? '…' : '')
       : '';
-    lines.push(`**${s.index}.** ${icon} \`${s.projectName}\`  ${label}  ${ago}${msg}`);
+
+    cardElements.push({
+      tag: 'column_set',
+      flex_mode: 'bisect',
+      horizontal_spacing: 'default',
+      columns: [
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 3,
+          elements: [
+            {
+              tag: 'markdown',
+              content:
+                `**${s.index}.** **⠂ ${s.cliTitle}**\n` +
+                `${icon} **${label}**　🕐 ${ago}` +
+                (snippet ? `\n_${snippet}_` : ''),
+            },
+          ],
+        },
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 1,
+          vertical_align: 'center',
+          elements: [{
+            tag: 'button',
+            text: { tag: 'plain_text', content: '详情' },
+            type: 'default',
+            size: 'small',
+            behaviors: [{ type: 'callback', value: { cmd: 'tasks', arg: String(s.index) } }],
+          }],
+        },
+      ],
+    });
+    cardElements.push({ tag: 'hr' });
   }
 
-  const summary = `📋 本地终端任务（最近${showAll ? '全部' : windowMin + '分钟'}，共 ${visible.length} 条）\n\n${lines.join('\n\n')}\n\n_发 \`/tasks <编号>\` 查看详情_`;
-  await reply(ctx, summary);
+  // Remove last hr
+  if (cardElements.length > 0 && (cardElements[cardElements.length - 1] as { tag?: string }).tag === 'hr') {
+    cardElements.pop();
+  }
+
+  const listCard = {
+    schema: '2.0',
+    config: { summary: { content: '本地终端任务' } },
+    body: { elements: cardElements },
+  };
+  await ctx.channel.send(ctx.msg.chatId, { card: listCard }, { replyTo: ctx.msg.messageId });
 }
 
 function statusIcon(s: import('../tasks/session-scanner').SessionSummary): string {

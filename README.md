@@ -307,7 +307,18 @@ pnpm build
 
 ## Daily digest
 
-The `/digest` command and the automatic daily digest require the local `claude` CLI to be installed and logged in (Claude Code). The bridge calls it to analyze run logs and sends the summary to your Feishu / Lark DM. If the CLI is not logged in, the digest silently degrades — all other features are unaffected.
+The `/digest` command and automatic daily notifications require the local `claude` CLI to be installed and logged in (Claude Code). The bridge calls it to analyze run logs and sends the summary as a Feishu interactive card to your DM. If the CLI is not logged in, the digest silently degrades — all other features are unaffected.
+
+Notifications are **disabled by default**. Enable and configure them via `/config` → 🔔 **定时通知** panel:
+
+- **Type**: `basic` (raw stats, no Claude call) or `ai` (Claude analysis)
+- **Time**: local HH:MM trigger time
+- **Prompt**: custom analysis prompt for `ai` type — supports `{LOG_DATA}` (log data) and `{GIT_LOG}` (recent git commits) placeholders. Leave blank to use the built-in default.
+- **Model**: Claude model for `ai` type (e.g. `claude-sonnet-4-6`). Leave blank to use the global default.
+- **Local storage**: directory path to archive digests as Markdown files
+- **Feishu doc URL**: Feishu/Lark doc to append each digest to
+
+You can also trigger a digest immediately with `/digest now [<id>]`, or list configured notifications with `/digest list`.
 
 ## Optional telemetry
 

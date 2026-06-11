@@ -172,6 +172,12 @@ export interface NotificationConfig {
    * When absent the built-in DEFAULT_PROMPT is used.
    */
   prompt?: string;
+  /**
+   * Claude model to use for AI analysis (only used when type === 'ai').
+   * Overrides schedule.digestModel. Defaults to CLAUDE_DEFAULT_MODEL.
+   * Example: 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'
+   */
+  model?: string;
   /** Local directory path for Markdown archive. Empty = disabled. */
   localStoragePath?: string;
   /** Feishu doc URL or token for cloud archive. Empty = disabled. */
@@ -188,6 +194,12 @@ export interface ScheduleConfig {
    * When absent or empty, falls back to legacy dailyDigest* fields for compatibility.
    */
   notifications?: NotificationConfig[];
+  /**
+   * Default Claude model for all AI-type digest notifications.
+   * Individual notifications can override via their own `model` field.
+   * Defaults to CLAUDE_DEFAULT_MODEL when absent.
+   */
+  digestModel?: string;
 
   // ── Legacy fields (deprecated) — kept for backward-compat read/migration ──
   /** @deprecated Use notifications instead. */
@@ -204,7 +216,7 @@ export const DEFAULT_NOTIFICATION: NotificationConfig = {
   name: '每日运行日报',
   type: 'basic',
   at: '08:00',
-  enabled: true,
+  enabled: false,
 };
 
 /**

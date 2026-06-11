@@ -6,6 +6,12 @@ import { homedir } from 'node:os';
 export interface SessionSummary {
   /** Human-readable project name derived from the encoded path */
   projectName: string;
+  /**
+   * CLI terminal title: the actual cwd from the JSONL system event,
+   * showing just the last path segment (e.g. "prd-quality-check-rules").
+   * Falls back to projectName when cwd is not available.
+   */
+  cliTitle: string;
   /** Absolute path to the .jsonl file */
   filePath: string;
   /** Inferred terminal state */
@@ -25,6 +31,25 @@ const STALE_THRESHOLD_MIN = 20;
 const RECENT_ACTIVITY_MIN = 5;
 
 /**
+ * Project directory name patterns to exclude from /tasks.
+ * These are Claude sessions spawned BY the bridge itself (Feishu-triggered runs),
+ * not the user's local terminal sessions we want to monitor.
+ */
+const BRIDGE_PROJECT_PATTERNS = [
+  /agent-bridge-workspaces/,
+  /lark-channel-workspaces/,
+  /lark-ai-bridge-workspaces/,
+];
+
+/**
+ * Minimum cwd path depth to be considered a real local terminal session.
+ * Sessions with cwd = $HOME (depth 2: /Users/liruncheng) or shallower are
+ * bridge-spawned Feishu sessions, not real terminal projects.
+ * Real projects are at least /Users/xxx/Desktop/project-name (depth 4+).
+ */
+const MIN_CWD_DEPTH = 4;
+
+/**
  * Scan ~/.claude/projects for sessions active in the last `windowMinutes` minutes.
  */
 export async function scanActiveSessions(
@@ -35,6 +60,7 @@ export async function scanActiveSessions(
     const entries = await readdir(CLAUDE_PROJECTS_DIR, { withFileTypes: true });
     projectDirs = entries
       .filter((e) => e.isDirectory())
+      .filter((e) => !BRIDGE_PROJECT_PATTERNS.some((p) => p.test(e.name)))
       .map((e) => join(CLAUDE_PROJECTS_DIR, e.name));
   } catch {
     return [];
@@ -108,8 +134,16 @@ async function parseSession(
   const lastMessage = extractLastAssistantMessage(events);
   const waitingForUser = isWaitingForUser(terminal, lastMessage);
   const projectName = decodeProjectName(filePath);
+  const cliTitle = extractCliTitle(events) ?? projectName;
 
-  return { projectName, filePath, terminal, waitingForUser, lastMessage, minutesAgo, index: 0 };
+  // Filter out bridge-spawned Feishu sessions: their cwd is $HOME or shallow
+  const cwd = extractCwd(events);
+  if (cwd) {
+    const depth = cwd.split('/').filter(Boolean).length;
+    if (depth < MIN_CWD_DEPTH) return null;
+  }
+
+  return { projectName, cliTitle, filePath, terminal, waitingForUser, lastMessage, minutesAgo, index: 0 };
 }
 
 function inferTerminal(
@@ -217,6 +251,41 @@ export async function getSessionDetail(
   const pendingQuestions = extractPendingQuestions(fullText);
 
   return { summary, lastAssistantText, truncated, pendingQuestions };
+}
+
+function extractCwd(events: Record<string, unknown>[]): string | null {
+  for (const e of events) {
+    if (e['type'] === 'system') {
+      const cwd = e['cwd'];
+      if (typeof cwd === 'string' && cwd) return cwd;
+    }
+  }
+  return null;
+}
+
+function extractCliTitle(events: Record<string, unknown>[]): string | null {
+  // Claude Code writes a 'system' event with cwd early in the session
+  for (const e of events) {
+    if (e['type'] === 'system') {
+      const cwd = (e as Record<string, unknown>)['cwd'];
+      if (typeof cwd === 'string' && cwd) {
+        const segs = cwd.split('/').filter(Boolean);
+        return segs[segs.length - 1] ?? null;
+      }
+    }
+  }
+  // Also check inside message.cwd for some SDK versions
+  for (const e of events) {
+    if (e['type'] === 'assistant') {
+      const msg = e['message'] as Record<string, unknown> | undefined;
+      const cwd = msg?.['cwd'];
+      if (typeof cwd === 'string' && cwd) {
+        const segs = cwd.split('/').filter(Boolean);
+        return segs[segs.length - 1] ?? null;
+      }
+    }
+  }
+  return null;
 }
 
 function extractFullAssistantText(events: Record<string, unknown>[]): string {

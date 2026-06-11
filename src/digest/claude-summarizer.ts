@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import { appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { CLAUDE_DEFAULT_MODEL } from '../agent/types';
 import type { DigestLogData } from './log-reader';
 
 export interface SummaryResult {
@@ -32,31 +34,54 @@ const DEFAULT_PROMPT = `你是一个 bot 运行助手，负责根据昨日运行
 
 如果没有相关内容则输出空数组。必须输出合法 JSON，不得输出其他任何内容。`;
 
-const TIMEOUT_MS = 30_000;
+const TIMEOUT_MS = 120_000;
+
+/** Fetch recent git log for the agent-bridge repo, injected as {GIT_LOG}. */
+async function fetchGitLog(): Promise<string> {
+  return new Promise((resolve) => {
+    const bridgeDir = join(homedir(), '.agent-bridge');
+    const child = spawn('git', ['-C', bridgeDir, 'log', '--oneline', '-20'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: process.env,
+    });
+    let out = '';
+    child.stdout.on('data', (chunk: Buffer) => { out += chunk.toString(); });
+    child.on('close', () => resolve(out.trim() || '(无 git log)'));
+    child.on('error', () => resolve('(git log 获取失败)'));
+    setTimeout(() => { child.kill(); resolve('(git log 超时)'); }, 5000);
+  });
+}
 
 export async function summarizeWithClaude(
   logData: DigestLogData,
   customPrompt?: string,
   logsDir?: string,
+  model?: string,
 ): Promise<SummaryResult> {
   const promptTemplate = customPrompt ?? DEFAULT_PROMPT;
-  const prompt = promptTemplate.replace(
-    '{LOG_DATA}',
-    JSON.stringify(
-      {
-        date: logData.date,
-        errors: logData.errors.slice(0, 20),
-        ownerPreviews: logData.ownerPreviews.slice(0, 30),
-      },
-      null,
-      2,
-    ),
+
+  // Pre-fetch git log if the prompt uses {GIT_LOG} placeholder
+  const needsGitLog = promptTemplate.includes('{GIT_LOG}');
+  const gitLog = needsGitLog ? await fetchGitLog() : '';
+
+  const logDataJson = JSON.stringify(
+    {
+      date: logData.date,
+      errors: logData.errors.slice(0, 20),
+      ownerPreviews: logData.ownerPreviews.slice(0, 30),
+    },
+    null,
+    2,
   );
+
+  const prompt = promptTemplate
+    .replace('{LOG_DATA}', logDataJson)
+    .replace('{GIT_LOG}', gitLog);
 
   const fallback = makeFallback(logData);
 
   try {
-    const output = await spawnClaude(prompt);
+    const output = await spawnClaude(prompt, model);
     const parsed = extractJson(output);
     if (!parsed) {
       await writeDigestError(logsDir, logData.dateKey, 'json-parse-failed',
@@ -113,11 +138,12 @@ function makeFallback(logData: DigestLogData): SummaryResult {
   };
 }
 
-async function spawnClaude(prompt: string): Promise<string> {
+async function spawnClaude(prompt: string, model?: string): Promise<string> {
+  const resolvedModel = model ?? CLAUDE_DEFAULT_MODEL;
   return new Promise((resolve, reject) => {
-    const child = spawn('claude', ['--print', '--output-format', 'text'], {
+    const child = spawn('claude', ['--print', '--output-format', 'text', '--model', resolvedModel], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
+      env: { ...process.env, CI: '1', TERM: 'dumb' },
     });
 
     const timer = setTimeout(() => {
@@ -127,12 +153,8 @@ async function spawnClaude(prompt: string): Promise<string> {
 
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
     child.on('close', (code) => {
       clearTimeout(timer);
       if (code !== 0) {
@@ -146,8 +168,8 @@ async function spawnClaude(prompt: string): Promise<string> {
       reject(err);
     });
 
-    child.stdin.write(prompt);
-    child.stdin.end();
+    // Write prompt to stdin and close — claude reads it via --print (stdin mode)
+    child.stdin.write(prompt, () => child.stdin.end());
   });
 }
 
