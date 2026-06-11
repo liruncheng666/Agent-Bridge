@@ -334,13 +334,14 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
 }
 
 /** Resolve schedule config with defaults applied. */
-export function getScheduleConfig(cfg: AppConfig): Required<Omit<ScheduleConfig, 'dailyDigestPrompt' | 'notifications'>> & Pick<ScheduleConfig, 'dailyDigestPrompt' | 'notifications'> {
+export function getScheduleConfig(cfg: AppConfig): Required<Omit<ScheduleConfig, 'dailyDigestPrompt' | 'notifications' | 'digestModel'>> & Pick<ScheduleConfig, 'dailyDigestPrompt' | 'notifications' | 'digestModel'> {
   const s = cfg.preferences?.schedule ?? {};
   return {
     dailyDigestAt: isValidHHMM(s.dailyDigestAt) ? s.dailyDigestAt! : '08:00',
     dailyDigestEnabled: s.dailyDigestEnabled !== false,
     dailyDigestPrompt: s.dailyDigestPrompt,
     notifications: s.notifications,
+    digestModel: s.digestModel,
   };
 }
 
