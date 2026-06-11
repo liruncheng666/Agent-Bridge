@@ -153,7 +153,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/status` | Show profile, agent, working directory, session, and run state |
-| `/config` | Adjust presentation preferences and view the access panel; shows group role panel inside groups |
+| `/config` | Adjust presentation preferences, access control, and digest notifications (DM only) |
 | `/role @name collaborator` | Set someone as a collaborator in the current group (can read/write workspace) |
 | `/role @name participant` | Set someone as a participant in the current group (read-only) |
 | `/role @name remove` | Remove someone from the current group role list |
@@ -165,6 +165,12 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/remove user @name`, `/remove admin @name`, `/remove group` | Remove access entries |
 | `/stop` | Stop the current run, including the card stop button |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
+| `/tasks` | List active local terminal sessions as a card with detail buttons |
+| `/tasks <n>` | Show the latest AI reply and pending questions for session #n |
+| `/digest list` | List configured digest notifications and their status |
+| `/digest now [<id>]` | Trigger a digest notification immediately |
+| `/digest on\|off` | Enable or disable the default daily digest |
+| `/digest at HH:MM` | Change the default digest trigger time |
 | `/ps` | List local bridge processes |
 | `/exit <id\|#>` | Stop a bridge process |
 | `/reconnect` | Force a WebSocket reconnect |
