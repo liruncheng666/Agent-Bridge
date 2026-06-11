@@ -1,41 +1,63 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getScheduleConfig } from '../config/schema';
+import { getResolvedNotifications } from '../config/schema';
+import type { NotificationConfig } from '../config/schema';
 import { readDayLogs } from './log-reader';
 import { summarizeWithClaude } from './claude-summarizer';
-import { formatDigestPost } from './format';
+import { formatDigestPost, formatBasicPost, toDigestCard } from './format';
+import { saveToLocal } from './local-store';
+import { appendToFeishuDoc } from './feishu-doc-writer';
 import { yesterdayKey, getDailyDigestAt, isDailyDigestEnabled } from '../bot/scheduler';
 import type { ScheduledTask, TaskContext } from '../bot/scheduler';
 import { log } from '../core/logger';
 
-const TASK_ID = 'daily-digest';
-
 /** Max days to look back for catch-up digests on startup. */
 const CATCHUP_MAX_DAYS = 3;
 
-/** Filename storing the set of dateKeys for which a digest was successfully sent. */
+/**
+ * Sent-record file. Now stores a map of notificationId → dateKey[].
+ * Legacy format (plain string array) is auto-migrated on first read.
+ */
 const SENT_RECORD_FILE = 'digest-sent.json';
 
+// ── Public API ─────────────────────────────────────────────────────────────
+
+/**
+ * Create one ScheduledTask per notification in the config.
+ * Replaces the old createDailyDigestTask() single-task factory.
+ */
+export function createNotificationTasks(notifications: NotificationConfig[]): ScheduledTask[] {
+  return notifications.map((n) => createTaskForNotification(n));
+}
+
+/** Legacy single-task factory kept for call-sites not yet migrated. */
 export function createDailyDigestTask(): ScheduledTask {
-  return {
-    id: TASK_ID,
-    getDailyAt: getDailyDigestAt,
-    isEnabled: isDailyDigestEnabled,
-    handler: runDailyDigest,
-  };
+  return createTaskForNotification({
+    id: 'daily-digest',
+    name: '每日运行日报',
+    type: 'basic',
+    at: '08:00',
+    enabled: true,
+  });
 }
 
 /**
  * Called once on bridge startup (after ownerOpenId is resolved).
- * Checks the last CATCHUP_MAX_DAYS days and sends any missed digests.
+ * Checks the last CATCHUP_MAX_DAYS days for each notification and sends missed ones.
  */
 export async function catchUpMissedDigests(ctx: TaskContext): Promise<void> {
-  if (!isDailyDigestEnabled(ctx.cfg)) return;
+  if (!ctx.ownerOpenId) {
+    log.warn('digest', 'catchup-skip-no-owner');
+    return;
+  }
 
-  const sent = await loadSentRecord(ctx.logsDir);
-  const today = todayKey();
+  const notifications = getResolvedNotifications(ctx.cfg);
+  // Only catch up enabled notifications
+  const enabled = notifications.filter((n) => n.enabled !== false);
+  if (enabled.length === 0) return;
 
-  // Build list of dateKeys to check: yesterday, day-before-yesterday, etc.
+  const sentMap = await loadSentMap(ctx.logsDir);
+
   const toCheck: string[] = [];
   for (let i = 1; i <= CATCHUP_MAX_DAYS; i++) {
     const d = new Date();
@@ -43,93 +65,156 @@ export async function catchUpMissedDigests(ctx: TaskContext): Promise<void> {
     toCheck.push(toDateKey(d));
   }
 
-  // Only send for days that have log data and haven't been sent yet.
-  for (const dateKey of toCheck) {
-    if (sent.has(dateKey)) continue;
+  for (const notification of enabled) {
+    const sent = sentMap.get(notification.id) ?? new Set<string>();
+    for (const dateKey of toCheck) {
+      if (sent.has(dateKey)) continue;
 
-    const logData = await readDayLogs(ctx.logsDir, dateKey, ctx.ownerOpenId);
-    if (!logData) continue; // no log = nothing to report, skip silently
+      const logData = await readDayLogs(ctx.logsDir, dateKey, ctx.ownerOpenId);
+      if (!logData) continue;
 
-    log.info('digest', 'catchup-send', { dateKey });
-    try {
-      await sendDigestForDate(ctx, dateKey, logData);
-      sent.add(dateKey);
-      await saveSentRecord(ctx.logsDir, sent);
-    } catch (err) {
-      log.fail('digest', err, { step: 'catchup', dateKey });
+      log.info('digest', 'catchup-send', { notificationId: notification.id, dateKey });
+      try {
+        await runNotificationForDate(ctx, notification, dateKey, logData);
+        sent.add(dateKey);
+        sentMap.set(notification.id, sent);
+        await saveSentMap(ctx.logsDir, sentMap);
+      } catch (err) {
+        log.fail('digest', err, { step: 'catchup', notificationId: notification.id, dateKey });
+      }
     }
   }
 }
 
-async function runDailyDigest(ctx: TaskContext): Promise<void> {
+// ── Task factory ───────────────────────────────────────────────────────────
+
+function createTaskForNotification(notification: NotificationConfig): ScheduledTask {
+  return {
+    id: notification.id,
+    getDailyAt: (cfg) => {
+      // Re-read from config so runtime edits via /config take effect without restart
+      const resolved = getResolvedNotifications(cfg);
+      const n = resolved.find((x) => x.id === notification.id);
+      const at = n?.at ?? notification.at;
+      return (at && isValidHHMM(at)) ? at : '08:00';
+    },
+    isEnabled: (cfg) => {
+      const resolved = getResolvedNotifications(cfg);
+      const n = resolved.find((x) => x.id === notification.id);
+      return (n?.enabled ?? notification.enabled) !== false;
+    },
+    handler: (ctx) => runScheduledNotification(ctx, notification.id),
+  };
+}
+
+async function runScheduledNotification(ctx: TaskContext, notificationId: string): Promise<void> {
+  const notifications = getResolvedNotifications(ctx.cfg);
+  const notification = notifications.find((n) => n.id === notificationId);
+  if (!notification) return;
+
   const dateKey = yesterdayKey();
-  const sent = await loadSentRecord(ctx.logsDir);
+  const sentMap = await loadSentMap(ctx.logsDir);
+  const sent = sentMap.get(notificationId) ?? new Set<string>();
 
   if (sent.has(dateKey)) {
-    log.info('digest', 'skip-already-sent', { dateKey });
+    log.info('digest', 'skip-already-sent', { notificationId, dateKey });
     return;
   }
 
   const logData = await readDayLogs(ctx.logsDir, dateKey, ctx.ownerOpenId);
 
   if (!logData) {
-    await sendMessage(ctx, {
+    // No log data — send a minimal notice. No local/doc storage for empty reports.
+    await sendRawMessage(ctx, {
       zh_cn: {
         title: `【日报】${fmtDate(dateKey)} · ${ctx.profile}`,
         content: [[{ tag: 'text', text: '昨日无运行日志。' }]],
       },
     });
     sent.add(dateKey);
-    await saveSentRecord(ctx.logsDir, sent);
+    sentMap.set(notificationId, sent);
+    await saveSentMap(ctx.logsDir, sentMap);
     return;
   }
 
-  await sendDigestForDate(ctx, dateKey, logData);
+  await runNotificationForDate(ctx, notification, dateKey, logData);
   sent.add(dateKey);
-  await saveSentRecord(ctx.logsDir, sent);
+  sentMap.set(notificationId, sent);
+  await saveSentMap(ctx.logsDir, sentMap);
 }
 
-async function sendDigestForDate(
+async function runNotificationForDate(
   ctx: TaskContext,
+  notification: NotificationConfig,
   dateKey: string,
   logData: Awaited<ReturnType<typeof readDayLogs>> & object,
 ): Promise<void> {
-  const customPrompt = getScheduleConfig(ctx.cfg).dailyDigestPrompt;
-  const summary = await summarizeWithClaude(logData, customPrompt, ctx.logsDir);
-  const post = formatDigestPost(logData, summary, ctx.profile);
-
-  // Prefix title with catch-up label when not yesterday
   const yesterday = yesterdayKey();
-  if (dateKey !== yesterday) {
+  const isCatchup = dateKey !== yesterday;
+
+  let post: { zh_cn: { title: string; content: unknown } };
+
+  if (notification.type === 'ai') {
+    const summary = await summarizeWithClaude(
+      logData,
+      notification.prompt,
+      ctx.logsDir,
+      notification.model ?? ctx.cfg.preferences?.schedule?.digestModel,
+    );
+    post = formatDigestPost(logData, summary, ctx.profile);
+  } else {
+    post = formatBasicPost(logData, ctx.profile);
+  }
+
+  if (isCatchup) {
     post.zh_cn.title = `【补发日报】${fmtDate(dateKey)} · ${ctx.profile}`;
   }
 
-  await sendMessage(ctx, post);
+  await sendAndStore(ctx, notification, post, dateKey);
 }
 
-// ── Sent-record helpers ────────────────────────────────────────────────────
+// ── Sent-record helpers (multi-notification) ───────────────────────────────
 
-async function loadSentRecord(logsDir: string): Promise<Set<string>> {
+type SentMap = Map<string, Set<string>>;
+
+async function loadSentMap(logsDir: string): Promise<SentMap> {
   try {
     const raw = await readFile(join(logsDir, SENT_RECORD_FILE), 'utf8');
-    const arr = JSON.parse(raw) as string[];
-    return new Set(Array.isArray(arr) ? arr : []);
+    const parsed = JSON.parse(raw) as unknown;
+
+    // Legacy format: plain string array → migrate to map under 'daily-digest'
+    if (Array.isArray(parsed)) {
+      const map = new Map<string, Set<string>>();
+      map.set('daily-digest', new Set(parsed as string[]));
+      return map;
+    }
+
+    // New format: Record<string, string[]>
+    if (parsed && typeof parsed === 'object') {
+      const map = new Map<string, Set<string>>();
+      for (const [id, dates] of Object.entries(parsed as Record<string, string[]>)) {
+        if (Array.isArray(dates)) {
+          map.set(id, new Set(dates));
+        }
+      }
+      return map;
+    }
   } catch {
-    return new Set();
+    // File missing or corrupt — start fresh
   }
+  return new Map();
 }
 
-async function saveSentRecord(logsDir: string, sent: Set<string>): Promise<void> {
-  // Keep only the last 30 days to prevent unbounded growth.
-  const sorted = [...sent].sort().slice(-30);
-  await writeFile(join(logsDir, SENT_RECORD_FILE), JSON.stringify(sorted), 'utf8');
+async function saveSentMap(logsDir: string, map: SentMap): Promise<void> {
+  const obj: Record<string, string[]> = {};
+  for (const [id, dates] of map.entries()) {
+    // Keep only the last 30 days per notification to prevent unbounded growth
+    obj[id] = [...dates].sort().slice(-30);
+  }
+  await writeFile(join(logsDir, SENT_RECORD_FILE), JSON.stringify(obj), 'utf8');
 }
 
 // ── Date helpers ───────────────────────────────────────────────────────────
-
-function todayKey(): string {
-  return toDateKey(new Date());
-}
 
 function toDateKey(d: Date): string {
   return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
@@ -139,19 +224,60 @@ function fmtDate(dateKey: string): string {
   return `${dateKey.slice(0, 4)}-${dateKey.slice(4, 6)}-${dateKey.slice(6, 8)}`;
 }
 
-async function sendMessage(
+function isValidHHMM(s: string | undefined): boolean {
+  if (!s) return false;
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
+}
+
+// ── Message sending + storage ──────────────────────────────────────────────
+
+async function sendAndStore(
+  ctx: TaskContext,
+  notification: NotificationConfig,
+  postContent: { zh_cn: { title: string; content: unknown } },
+  dateKey: string,
+): Promise<void> {
+  // 1. Send Feishu message (primary, must succeed)
+  await sendRawMessage(ctx, postContent);
+
+  // 2. Local storage (best-effort, non-blocking)
+  if (notification.localStoragePath) {
+    await saveToLocal(notification, postContent as import('./format').PostContent, dateKey);
+  }
+
+  // 3. Feishu doc storage (best-effort, non-blocking)
+  if (notification.feishuDocUrl) {
+    await appendToFeishuDoc(
+      notification,
+      postContent as import('./format').PostContent,
+      dateKey,
+      ctx.rawClient,
+      ctx.ownerOpenId,
+    );
+  }
+}
+
+/** Send a Feishu interactive card to the bot owner. Throws on failure. */
+async function sendRawMessage(
   ctx: TaskContext,
   postContent: { zh_cn: { title: string; content: unknown } },
 ): Promise<void> {
+  // Convert post to interactive card for better formatting (markdown bold, hr, etc.)
+  const card = toDigestCard(postContent as import('./format').PostContent);
   try {
-    await ctx.rawClient.im.v1.message.create({
+    const resp = await ctx.rawClient.im.v1.message.create({
       params: { receive_id_type: 'open_id' },
       data: {
         receive_id: ctx.ownerOpenId,
-        msg_type: 'post',
-        content: JSON.stringify(postContent),
+        msg_type: 'interactive',
+        content: JSON.stringify(card),
       },
     });
+    const respCode = (resp as { code?: number } | undefined)?.code;
+    if (respCode != null && respCode !== 0) {
+      const respMsg = (resp as { msg?: string } | undefined)?.msg ?? '';
+      throw new Error(`Feishu API error ${respCode}: ${respMsg}`);
+    }
     log.info('digest', 'send-ok', { title: postContent.zh_cn.title });
   } catch (err) {
     log.fail('digest', err, { step: 'send-message', title: postContent.zh_cn.title });

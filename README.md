@@ -153,7 +153,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/status` | Show profile, agent, working directory, session, and run state |
-| `/config` | Adjust presentation preferences and view the access panel; shows group role panel inside groups |
+| `/config` | Adjust presentation preferences, access control, and digest notifications (DM only) |
 | `/role @name collaborator` | Set someone as a collaborator in the current group (can read/write workspace) |
 | `/role @name participant` | Set someone as a participant in the current group (read-only) |
 | `/role @name remove` | Remove someone from the current group role list |
@@ -165,6 +165,12 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/remove user @name`, `/remove admin @name`, `/remove group` | Remove access entries |
 | `/stop` | Stop the current run, including the card stop button |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
+| `/tasks` | List active local terminal sessions as a card with detail buttons |
+| `/tasks <n>` | Show the latest AI reply and pending questions for session #n |
+| `/digest list` | List configured digest notifications and their status |
+| `/digest now [<id>]` | Trigger a digest notification immediately |
+| `/digest on\|off` | Enable or disable the default daily digest |
+| `/digest at HH:MM` | Change the default digest trigger time |
 | `/ps` | List local bridge processes |
 | `/exit <id\|#>` | Stop a bridge process |
 | `/reconnect` | Force a WebSocket reconnect |
@@ -307,7 +313,18 @@ pnpm build
 
 ## Daily digest
 
-The `/digest` command and the automatic daily digest require the local `claude` CLI to be installed and logged in (Claude Code). The bridge calls it to analyze run logs and sends the summary to your Feishu / Lark DM. If the CLI is not logged in, the digest silently degrades — all other features are unaffected.
+The `/digest` command and automatic daily notifications require the local `claude` CLI to be installed and logged in (Claude Code). The bridge calls it to analyze run logs and sends the summary as a Feishu interactive card to your DM. If the CLI is not logged in, the digest silently degrades — all other features are unaffected.
+
+Notifications are **disabled by default**. Enable and configure them via `/config` → 🔔 **定时通知** panel:
+
+- **Type**: `basic` (raw stats, no Claude call) or `ai` (Claude analysis)
+- **Time**: local HH:MM trigger time
+- **Prompt**: custom analysis prompt for `ai` type — supports `{LOG_DATA}` (log data) and `{GIT_LOG}` (recent git commits) placeholders. Leave blank to use the built-in default.
+- **Model**: Claude model for `ai` type (e.g. `claude-sonnet-4-6`). Leave blank to use the global default.
+- **Local storage**: directory path to archive digests as Markdown files
+- **Feishu doc URL**: Feishu/Lark doc to append each digest to
+
+You can also trigger a digest immediately with `/digest now [<id>]`, or list configured notifications with `/digest list`.
 
 ## Optional telemetry
 
