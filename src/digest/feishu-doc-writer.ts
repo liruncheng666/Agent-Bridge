@@ -59,8 +59,8 @@ export async function appendToFeishuDoc(
     });
     const blockCount = (docResp as { data?: { block_count?: number } })?.data?.block_count ?? 0;
 
-    await (rawClient as unknown as DocxClient).docx.v1.documentBlock.batchCreate({
-      path: { document_id: docToken },
+    await (rawClient as unknown as DocxClient).docx.v1.documentBlockChildren.create({
+      path: { document_id: docToken, block_id: docToken },
       params: {
         document_revision_id: -1,
         client_token: `digest-${notification.id}-${dateKey}`,
@@ -124,9 +124,9 @@ interface DocxClient {
           params: { lang: number };
         }): Promise<unknown>;
       };
-      documentBlock: {
-        batchCreate(payload: {
-          path: { document_id: string };
+      documentBlockChildren: {
+        create(payload: {
+          path: { document_id: string; block_id: string };
           params: { document_revision_id: number; client_token: string };
           data: { children: object[]; index: number };
         }): Promise<unknown>;
